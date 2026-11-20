@@ -1,2 +1,5 @@
 note|Update channel is working. Claude can send you objectives and tips here.
-obj|184|22|419|9|5|Beat Charlotte at the Calcenon Gym (north side of Calcenon City). Lead Gigalith + Scrafty.
+note|After Charlotte: get HM06 Dive from your friends in Calcenon, then go back to Ametrine Mountain.
+note|Ametrine Mountain: Surf north across the river, Dive in the dark water, come up in the light patch. Dive again going south to a small cave and surface to find the PULSE Avalugg.
+note|PULSE Avalugg: use Fire or Fighting moves. Heat Wave clears the ice field. Heal before, then climb to 3F for two ice puzzles.
+note|Then Ametrine City: talk to Shelly and find Heather.
