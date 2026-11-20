@@ -1,0 +1,2 @@
+note|Update channel is working. Claude can send you objectives and tips here.
+obj|184|22|419|9|5|Beat Charlotte at the Calcenon Gym (north side of Calcenon City). Lead Gigalith + Scrafty.
