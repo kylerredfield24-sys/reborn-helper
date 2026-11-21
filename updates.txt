@@ -1,3 +1,3 @@
-version|3
+version|4
 note|Blake's room: the helper now walks you through the secret-passage puzzle step by step.
 note|Picking Yes/No? The top-left panel shows what each answer does.

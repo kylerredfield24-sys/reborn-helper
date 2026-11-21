@@ -1,4 +1,4 @@
-RH_VERSION = 3   # bumped with every release (used by the auto-updater)
+RH_VERSION = 4   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -101,6 +101,10 @@ module RH
       d = {}
       $PokemonGlobal.instance_variable_set(:@rh_data, d)
     end
+    if !d[:rh_loaded]           # settings saved outside the save file (kept even if you don't save)
+      d[:rh_loaded] = true
+      load_settings(d)
+    end
     d[:hud] = true if d[:hud].nil?
     d[:dots] = true if d[:dots].nil?
     d[:font] ||= 0
@@ -112,6 +116,26 @@ module RH
 
   def self.log
     $rh_battle_log ||= []
+  end
+
+  SETTINGS_FILE = "./patch/Mods/RebornHelper_settings.txt"
+  SETTING_KEYS = [:hud, :dots, :font, :battle, :sync]
+
+  def self.load_settings(d)
+    return if !File.exist?(SETTINGS_FILE)
+    File.read(SETTINGS_FILE).each_line do |l|
+      k, v = l.strip.split("=", 2)
+      next if !k || !v || !SETTING_KEYS.include?(k.to_sym)
+      d[k.to_sym] = v == "true" ? true : v == "false" ? false : v.to_i
+    end
+  rescue
+  end
+
+  def self.save_settings
+    d = g
+    return if !d
+    File.open(SETTINGS_FILE, "w") { |f| SETTING_KEYS.each { |k| f.puts("#{k}=#{d[k]}") unless d[k].nil? } }
+  rescue
   end
 
   #------------------------------------------------------------------ text
@@ -900,14 +924,15 @@ module RH
 
   # smart plan first (real map data), then the simple map graph as a backup
   def self.route_to(targets, spot = nil)
-    [false, true].each do |relax|
+    [false, true, :people].each do |relax|
       pl = (plan(targets, spot, relax) rescue nil)
       next if !pl
       path = tile_path(pl[1])
       next if path.empty?
       lbl = { :dive => "dark water - Dive (A)", :surface => "surface here (A)",
               :lever => "#{mapname(pl[0])} - use the elevator panel / switch first" }[pl[2]] || mapname(pl[0])
-      lbl += " (push the boulders)" if relax
+      lbl += " (push the boulders)" if relax == true
+      lbl += " (walk around / talk to people in the way)" if relax == :people
       return [path, lbl]
     end
     hop = next_hop($game_map.map_id, targets)
@@ -1045,6 +1070,7 @@ module RH
     if tile_id.to_i > 0
       md[:evtile][[x, y]] = tile_id
     elsif charname.to_s != "" && !clearable?(list)
+      return if @rh_relax == :people                    # last try: people in the way usually move / can be talked past
       if boulder?(list) && (can_strength? || @rh_relax)   # relaxed search: assume boulders can be moved
         md[:boulder][[x, y]] = true
       else
@@ -1057,7 +1083,7 @@ module RH
   # For the map you are on, blockers come from the LIVE events (moved boulders, NPCs that walked away).
   def self.model(id)
     db = route_db
-    key = [id, @rh_relax ? true : false]
+    key = [id, @rh_relax]
     return db[:models][key] if db[:models].key?(key)
     db[:models][key] = nil
     m = ($cache.map_load(id) rescue nil)
@@ -1334,6 +1360,7 @@ module RH
       db[:live] = [here, ls]
       db[:models].delete([here, false])
       db[:models].delete([here, true])
+      db[:models].delete([here, :people])
       db[:plans] = {}
     end
     md = model(here)
@@ -1395,7 +1422,8 @@ module RH
     end
     db[:plans][key] = res
     return res
-  rescue
+  rescue => e
+    $rh_plan_err = "#{e.class}: #{e.message} @ #{(e.backtrace || []).first.to_s[-60, 60]}"
     return nil
   ensure
     @rh_relax = false
@@ -1560,7 +1588,7 @@ module RH
       f = m_flood(md, $game_player.x, $game_player.y)
       return true if spot.any? { |x, y| touch?(f[:tiles], x, y) }
     end
-    [false, true].each do |relax|
+    [false, true, :people].each do |relax|
       pl = (plan([c[:map]], spot, relax) rescue nil)
       return true if pl.nil? || pl   # nil = search too big to tell, give it the benefit of the doubt
     end
@@ -2580,8 +2608,16 @@ module RH
     t << "=== Pokemon Reborn context (paste this to Claude) ==="
     t << "Location: #{mapname($game_map.map_id)} (map #{$game_map.map_id}) x#{$game_player.x} y#{$game_player.y}"
     t << "Badges: #{$Trainer.numbadges}   Level cap: #{cap}   Money: $#{$Trainer.money}"
-    sv = [150, 159, 173, 184, 276].map { |v| "#{v}=#{$game_variables[v] rescue '?'}" }.join(" ")
+    sv = STORY_VARS.map { |v| "#{v}=#{$game_variables[v] rescue '?'}" }.join(" ")
     t << "Story vars: #{sv}"
+    on = (1..2300).find_all { |i| ($game_switches[i] rescue false) && (i.between?(440, 620)) }
+    t << "Story switches on: #{on.join(',')}"
+    lr = (live_step rescue nil)
+    t << "Helper target: #{lr ? "map #{lr[:map]} ev#{lr[:id]} (#{lr[:x]},#{lr[:y]}) trig#{lr[:trig]} to#{lr[:to]} spec#{lr[:spec]}" : 'none'}"
+    np = (nav_path rescue nil)
+    t << "Helper route: #{np ? "#{np[1]} (#{np[0].length} steps)" : 'none'}"
+    t << "Helper error: #{$rh_plan_err}" if $rh_plan_err
+    t << "Helper version: #{RH_VERSION}"
     dex = $Trainer.pokedex rescue nil
     t << "Pokedex: seen #{dex.getSeenCount} / owned #{dex.getOwnedCount}" if dex
     obj = objective
@@ -2772,6 +2808,7 @@ module RH
       when :export
         @note = RH.export_context
       end
+      RH.save_settings if [:tbattle, :thud, :tdots, :tfont, :tsync].include?(row[0])
     end
 
     def draw
@@ -2924,7 +2961,7 @@ class Scene_Map
       if free && Input.trigger?(Input::R)
         RH.open_menu
       elsif free && Input.trigger?(Input::L)
-        RH.g[:dots] = !RH.g[:dots]
+        RH.g[:dots] = !RH.g[:dots]; RH.save_settings
         $rh_hud_key = nil
       end
       $rh_hud_frame = Graphics.frame_count
