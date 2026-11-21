@@ -1,4 +1,4 @@
-RH_VERSION = 2   # bumped with every release (used by the auto-updater)
+RH_VERSION = 3   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -905,7 +905,8 @@ module RH
       next if !pl
       path = tile_path(pl[1])
       next if path.empty?
-      lbl = { :dive => "dark water - Dive (A)", :surface => "surface here (A)" }[pl[2]] || mapname(pl[0])
+      lbl = { :dive => "dark water - Dive (A)", :surface => "surface here (A)",
+              :lever => "#{mapname(pl[0])} - use the elevator panel / switch first" }[pl[2]] || mapname(pl[0])
       lbl += " (push the boulders)" if relax
       return [path, lbl]
     end
@@ -1066,6 +1067,36 @@ module RH
     md = { :id => id, :w => m.width, :h => m.height, :data => m.data, :pas => ts.passages, :pri => ts.priorities,
            :tt => ts.terrain_tags, :evtile => {}, :block => {}, :boulder => {}, :warps => [], :floods => [] }
     live = (id == ($game_map.map_id rescue nil)) && ($game_map.events rescue nil)
+    # variables you can change yourself on this map (elevator panels, levers...): var => [values]
+    settable = {}
+    (m.events || {}).each do |eid, ev|
+      pg = active_page(id, ev)
+      next if !pg || pg.trigger != 0
+      (pg.list || []).each do |c|
+        next if c.code != 122 || c.parameters[3] != 0 || c.parameters[2] != 0 || c.parameters[0] != c.parameters[1]
+        next if STORY_VARS.include?(c.parameters[0])
+        (settable[c.parameters[0]] ||= []) << c.parameters[4]
+      end
+    end
+    (m.events || {}).each do |eid, ev|
+      # doors that open once you flip something on this map (e.g. pick the floor in an elevator)
+      ev.pages.each do |op|
+        next if op.equal?(active_page(id, ev))
+        c = op.condition
+        next if !c.variable_valid || !settable[c.variable_id]
+        next if !settable[c.variable_id].any? { |v| v >= c.variable_value }
+        next if c.switch1_valid && !($game_switches[c.switch1_id] rescue false)
+        next if c.switch2_valid && !($game_switches[c.switch2_id] rescue false)
+        next if c.self_switch_valid && !($game_self_switches[[id, ev.id, c.self_switch_ch]] rescue false)
+        next if op.trigger == 3 || op.trigger == 4
+        (op.list || []).each do |cmd|
+          if cmd.code == 201 && cmd.parameters[0] == 0
+            md[:warps] << [ev.x, ev.y, cmd.parameters[1], cmd.parameters[2], cmd.parameters[3], :lever]
+            break
+          end
+        end
+      end
+    end
     (m.events || {}).each do |eid, ev|
       pg = active_page(id, ev)
       next if !pg
@@ -1207,8 +1238,8 @@ module RH
   def self.m_exits(md, f)
     return f[:exits] if f[:exits]
     out = []
-    md[:warps].each do |x, y, to, tx, ty|
-      out << [to, tx, ty, [[x, y]], :walk] if touch?(f[:tiles], x, y)
+    md[:warps].each do |x, y, to, tx, ty, lv|
+      out << [to, tx, ty, [[x, y]], lv ? :lever : :walk] if touch?(f[:tiles], x, y)
     end
     w = md[:w]
     h = md[:h]
@@ -1434,8 +1465,15 @@ module RH
         end
         next if !best && !add
         cv = (cond && cond.variable_valid && cond.variable_id == var) ? cond.variable_value : nil
+        # how specific is this page to where you are in the story? (switch conditions = route-specific scenes)
+        spec = 0
+        if cond
+          spec += 2 if cv
+          spec += 3 if cond.switch1_valid
+          spec += 3 if cond.switch2_valid
+        end
         out << { :map => mid, :id => eid, :x => ex, :y => ey, :trig => trig, :sp => speaker_of(list).to_s,
-                 :to => best || cur + 1, :add => add && !best, :v => var, :cv => cv }
+                 :to => best || cur + 1, :add => add && !best, :v => var, :cv => cv, :spec => spec }
       end
     end
     return out
@@ -1493,22 +1531,15 @@ module RH
       next if cs.empty?
       # 1) steps unlocked by reaching this exact point in the story, 2) other story steps, 3) "ask around" counters
       # ...and only ones you can actually get to right now
-      gated = cs.find_all { |c| !c[:add] && c[:cv] }
-      rest = cs.find_all { |c| !(!c[:add] && c[:cv]) }
+      # most story-specific scenes first (route switches + exact story point), then smallest step, "ask around" last
+      real = cs.find_all { |c| !c[:add] }
+      adds = cs.find_all { |c| c[:add] }
       groups = []
-      if !gated.empty?
-        top = gated.map { |c| c[:cv] }.max
-        groups << gated.find_all { |c| c[:cv] == top }
-      end
-      # smallest story step first ("ask around" counters count as +1); real steps beat counters on a tie
-      rest.map { |c| c[:to] }.uniq.sort.each do |t|
-        same = rest.find_all { |c| c[:to] == t }
-        real = same.find_all { |c| !c[:add] }
-        groups << real if !real.empty?
-        adds = same.find_all { |c| c[:add] }
-        groups << adds if !adds.empty?
-      end
-      pickg = groups.first(5).map { |gp| gp.find_all { |c| reachable_spot?(c) } }.find { |gp| !gp.empty? }
+      # pages with no conditions at all are often leftovers - try them after "ask around"
+      real.find_all { |c| c[:spec] > 0 }.group_by { |c| [-c[:spec], c[:to]] }.sort.each { |_, gp| groups << gp }
+      groups << adds if !adds.empty?
+      real.find_all { |c| c[:spec] == 0 }.group_by { |c| c[:to] }.sort.each { |_, gp| groups << gp }
+      pickg = groups.first(6).map { |gp| gp.find_all { |c| reachable_spot?(c) } }.find { |gp| !gp.empty? }
       cs = pickg || groups.first
       mine = cs.find_all { |c| c[:map] == here }
       cs = mine if !mine.empty?
