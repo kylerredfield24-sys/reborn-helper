@@ -1,4 +1,4 @@
-RH_VERSION = 4   # bumped with every release (used by the auto-updater)
+RH_VERSION = 5   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -1500,7 +1500,22 @@ module RH
           spec += 3 if cond.switch1_valid
           spec += 3 if cond.switch2_valid
         end
-        out << { :map => mid, :id => eid, :x => ex, :y => ey, :trig => trig, :sp => speaker_of(list).to_s,
+        btl = nil
+        list.each do |c|
+          next if ![355, 655, 111].include?(c.code)
+          t = c.parameters.last.to_s
+          if t =~ /TrainerBattle\(\s*:(\w+)\s*,\s*"([^"]+)"/
+            nm = $2
+            sym = $1.to_sym
+            cls = ($cache.trainertypes[sym].name rescue nil) || ($cache.trainertypes[sym][:name] rescue nil) || sym.to_s.split("_").map(&:capitalize).join(" ")
+            btl = "#{cls} #{nm}"
+            break
+          elsif t =~ /pbWildBattle\(\s*:(\w+)/
+            btl = $1.capitalize
+            break
+          end
+        end
+        out << { :map => mid, :id => eid, :x => ex, :y => ey, :trig => trig, :sp => speaker_of(list).to_s, :battle => btl,
                  :to => best || cur + 1, :add => add && !best, :v => var, :cv => cv, :spec => spec }
       end
     end
@@ -1595,12 +1610,40 @@ module RH
     return false
   end
 
+  # rough compass direction + distance from you (same map) or which part of the map (other map)
+  def self.where_text(r)
+    if r[:map] == ($game_map.map_id rescue 0)
+      dx = r[:x] - $game_player.x
+      dy = r[:y] - $game_player.y
+      return "right here" if dx.abs + dy.abs <= 1
+      ns = dy < -2 ? "north" : dy > 2 ? "south" : ""
+      ew = dx < -2 ? "west" : dx > 2 ? "east" : ""
+      return "#{ns}#{ew}".sub("northwest", "north-west").sub("northeast", "north-east").sub("southwest", "south-west").sub("southeast", "south-east") + " of you, ~#{dx.abs + dy.abs} steps"
+    end
+    md = (model(r[:map]) rescue nil)
+    return "" if !md || md[:w] < 30
+    ns = r[:y] < md[:h] / 3 ? "north" : r[:y] > md[:h] * 2 / 3 ? "south" : ""
+    ew = r[:x] < md[:w] / 3 ? "west" : r[:x] > md[:w] * 2 / 3 ? "east" : ""
+    part = ns + (ns != "" && ew != "" ? "-" : "") + ew
+    return part.empty? ? "middle of the map" : "#{part} side"
+  end
+
   def self.live_text(r)
     place = mapname(r[:map])
+    place = "this area" if r[:map] == ($game_map.map_id rescue -1)
+    where = (where_text(r) rescue "")
+    wh = where.empty? ? "" : " (#{where})"
     if r[:add]
       return "Ask around #{place}: talk to the people the route points to#{r[:count] > 1 ? " (#{r[:count]} to check)" : ""}."
     end
-    return step_text(r)
+    who = r[:sp].to_s.strip
+    t = case r[:trig]
+        when 0 then who.empty? ? "Check the marked spot in #{place}#{wh} (press A)." : "Talk to #{who} in #{place}#{wh}."
+        when 1, 2 then "Walk onto the marked spot in #{place}#{wh}" + (who.empty? ? "." : " - #{who} is there.")
+        else "Go to the marked spot in #{place}#{wh} - a scene starts" + (who.empty? ? "." : " (#{who}).")
+        end
+    t += " Battle ahead: #{r[:battle]} - heal first." if r[:battle]
+    return t
   end
 end
 
