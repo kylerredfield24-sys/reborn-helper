@@ -1,4 +1,4 @@
-RH_VERSION = 5   # bumped with every release (used by the auto-updater)
+RH_VERSION = 6   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -939,9 +939,21 @@ module RH
     if hop
       path = tile_path(goal_tiles(hop))
       return [path, mapname(hop)] if !path.empty?
-      return [[], "#{mapname(hop)} - look for a puzzle or a way around"]
     end
-    return [[], "head for #{mapname(targets.first)}"]
+    # never leave you without a line: walk to the exit of this area that leads closest to the goal
+    begin
+      md = model($game_map.map_id)
+      f = m_flood(md, $game_player.x, $game_player.y)
+      dist = static_dist(targets)
+      exits = m_exits(md, f).reject { |e| e[0] == $game_map.map_id && !targets.include?(e[0]) }
+      exits = exits.sort_by { |e| dist[e[0]] || 99 }
+      exits.first(4).each do |e|
+        path = tile_path(e[3])
+        return [path, "towards #{mapname(targets.first)} via #{mapname(e[0])}"] if !path.empty?
+      end
+    rescue
+    end
+    return [[], "towards #{mapname(targets.first)}"]
   end
 
   # returns [path, label]
@@ -983,7 +995,7 @@ module RH
         res = [tile_path(story_goal_tiles(r)), "story spot"]
         if res[0].empty?   # can't walk there inside this map - go out and use another door
           res = route_to([here], spot_tiles(r))
-          res = [res[0], res[0].empty? ? "story spot - look for a puzzle or way around" : res[1] + " (other way in)"]
+          res = [res[0], res[1] + " (the way around)"]
         end
       else
         res = route_to([r[:map]], spot_tiles(r))
