@@ -1,4 +1,4 @@
-RH_VERSION = 13   # bumped with every release (used by the auto-updater)
+RH_VERSION = 14   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -591,8 +591,7 @@ module RH
 
   # Rock Climb walls are marked by events named "RockClimb..." - a wall if you can't climb yet
   def self.climb_wall?(name, list)
-    return false if !name.to_s.start_with?("RockClimb")
-    return false if !list || list.length <= 1
+    return false if !name.to_s.start_with?("RockClimb")   # every tile of a climbing wall (ends and middle)
     return !can_rockclimb?
   end
 
@@ -1059,7 +1058,7 @@ module RH
 
   # cleared whenever the story moves on (switches change what is open)
   def self.route_db
-    sig = [STORY_VARS.map { |v| ($game_variables[v] rescue 0) }, ($Trainer.numbadges rescue 0), can_surf?, can_dive?, can_smash?, can_cut?, can_strength?, can_rockclimb?, can_waterfall?]
+    sig = [STORY_VARS.map { |v| ($game_variables[v] rescue 0) }, ($Trainer.numbadges rescue 0), can_surf?, can_dive?, can_smash?, can_cut?, can_strength?, can_rockclimb?, can_waterfall?, $rh_world_sig]
     if !$rh_route_db || $rh_route_db[:sig] != sig
       $rh_route_db = { :sig => sig, :models => {}, :plans => {} }
     end
@@ -2758,8 +2757,24 @@ module RH
     $rh_dot_key = nil
   end
 
+  # every ~5 seconds: re-check the story step and whether the world changed (gates, switches, people)
+  def self.tick_refresh
+    fc = (Graphics.frame_count rescue 0)
+    return if $rh_tick && fc - $rh_tick < 300
+    $rh_tick = fc
+    sig = [($game_switches.instance_variable_get(:@data).hash rescue 0),
+           ($game_self_switches.instance_variable_get(:@data).hash rescue 0),
+           ($game_variables.instance_variable_get(:@data).hash rescue 0)]
+    if sig != $rh_world_sig
+      $rh_world_sig = sig          # route planner rebuilds its picture of the world
+      $rh_live = nil               # story step is worked out again
+      $rh_obj = nil
+    end
+  end
+
   def self.hud_update
     hud_build
+    tick_refresh rescue nil
     d = g
     fetch_updates if !$rh_fetching
     if d && !d[:navinit]
