@@ -1,4 +1,4 @@
-RH_VERSION = 16   # bumped with every release (used by the auto-updater)
+RH_VERSION = 17   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -1160,27 +1160,56 @@ module RH
         end
       end
     end
-    # cutscenes that start the moment you arrive and carry you somewhere else
-    # (e.g. sliding down a waterfall sets a value, then a scene walks you inside)
-    tv = transit_vars(id)
+    # cutscenes that move you somewhere by themselves:
+    #  - ones that start the moment you arrive (the way in sets a value / switch first)
+    #  - ones that start after you step on / talk to something on this map
+    tv, tsw = transit_vars(id)
+    msv = {}   # values events on this map can set: var => [[value, x, y]]
+    mss = {}   # switches events on this map turn on: switch => [[x, y]]
     (m.events || {}).each do |eid, ev|
-      # try "as things are now" plus each value the way in can set
-      tries = [nil] + tv.flat_map { |v, vals| vals.map { |x| [v, x] } }
-      tries.each do |tvar, tval|
+      ev.pages.each do |pg|
+        next if pg.trigger > 2
+        (pg.list || []).each do |q|
+          pr = q.parameters
+          if q.code == 122 && pr[0] == pr[1] && pr[2] == 0 && pr[3] == 0
+            (msv[pr[0]] ||= []) << [pr[4], ev.x, ev.y]
+          elsif q.code == 121 && pr[0] == pr[1] && pr[2] == 0
+            (mss[pr[0]] ||= []) << [ev.x, ev.y]
+          end
+        end
+      end
+    end
+    (m.events || {}).each do |eid, ev|
+      next if !ev.pages.any? { |op| (op.trigger == 3 || op.trigger == 4) && (op.list || []).any? { |q| q.code == 201 } }
+      tries = [[nil]]
+      tv.each { |v, vals| vals.each { |x| tries << [:var, v, x, nil] } }
+      tsw.each_key { |sw| tries << [:sw, sw, true, nil] }
+      ev.pages.each do |op|
+        c = op.condition
+        (msv[c.variable_id] || []).each { |val, sx, sy| tries << [:var, c.variable_id, val, [sx, sy]] } if c.variable_valid
+        [c.switch1_valid ? c.switch1_id : nil, c.switch2_valid ? c.switch2_id : nil].compact.each do |sw|
+          (mss[sw] || []).each { |sx, sy| tries << [:sw, sw, true, [sx, sy]] }
+        end
+      end
+      tries.uniq.first(40).each do |kind, tid, tval, at|
         ev.pages.reverse_each do |op|
           c = op.condition
-          next if c.switch1_valid && !($game_switches[c.switch1_id] rescue false)
-          next if c.switch2_valid && !($game_switches[c.switch2_id] rescue false)
+          s1 = c.switch1_valid && !(kind == :sw && tid == c.switch1_id) && !($game_switches[c.switch1_id] rescue false)
+          s2 = c.switch2_valid && !(kind == :sw && tid == c.switch2_id) && !($game_switches[c.switch2_id] rescue false)
+          next if s1 || s2
           next if c.self_switch_valid && !($game_self_switches[[id, ev.id, c.self_switch_ch]] rescue false)
           if c.variable_valid
-            cur = (c.variable_id == tvar) ? tval : ($game_variables[c.variable_id] rescue 0).to_i
+            cur = (kind == :var && c.variable_id == tid) ? tval : ($game_variables[c.variable_id] rescue 0).to_i
             next if cur < c.variable_value
           end
-          # this is the page that will be live when you arrive
-          if op.trigger == 3
+          # this is the page that will be live
+          if op.trigger == 3 || op.trigger == 4
             cmd = (op.list || []).find { |q| q.code == 201 && q.parameters[0] == 0 }
-            w = [ev.x, ev.y, cmd.parameters[1], cmd.parameters[2], cmd.parameters[3], :auto] if cmd && cmd.parameters[1] != id
-            md[:warps] << w if w && !md[:warps].include?(w)
+            if cmd && cmd.parameters[1] != id
+              w = at ? [at[0], at[1], cmd.parameters[1], cmd.parameters[2], cmd.parameters[3]] :
+                       [ev.x, ev.y, cmd.parameters[1], cmd.parameters[2], cmd.parameters[3], :auto]
+              md[:warps] << w if !md[:warps].include?(w)
+            end
           end
           break
         end
@@ -1198,6 +1227,8 @@ module RH
       (pg.list || []).each do |cmd|
         if cmd.code == 201 && cmd.parameters[0] == 0
           md[:warps] << [ev.x, ev.y, cmd.parameters[1], cmd.parameters[2], cmd.parameters[3]]
+        elsif cmd.code == 117
+          common_warps(cmd.parameters[0]).each { |to, x2, y2| md[:warps] << [ev.x, ev.y, to, x2, y2] }
         end
       end
     end
@@ -1216,6 +1247,7 @@ module RH
     $rh_transit ||= {}
     return $rh_transit[id] if $rh_transit[id]
     out = {}
+    sws = {}
     srcs = []
     warps.each { |from, list| srcs << from if list.any? { |w| w[2] == id } }
     srcs.uniq.each do |sid|
@@ -1226,16 +1258,31 @@ module RH
           l = pg.list || []
           next if !l.any? { |q| q.code == 201 && q.parameters[0] == 0 && q.parameters[1] == id }
           l.each do |q|
-            next if q.code != 122 || q.parameters[2] != 0 || q.parameters[3] != 0 || q.parameters[0] != q.parameters[1]
-            next if STORY_VARS.include?(q.parameters[0])
-            (out[q.parameters[0]] ||= []) << q.parameters[4]
-            out[q.parameters[0]].uniq!
+            pr = q.parameters
+            if q.code == 122 && pr[2] == 0 && pr[3] == 0 && pr[0] == pr[1] && !STORY_VARS.include?(pr[0])
+              (out[pr[0]] ||= []) << pr[4]
+              out[pr[0]].uniq!
+            elsif q.code == 121 && pr[2] == 0 && pr[0] == pr[1]
+              sws[pr[0]] = true
+            end
           end
         end
       end
     end
-    $rh_transit[id] = out
-    return out
+    $rh_transit[id] = [out, sws]
+    return $rh_transit[id]
+  end
+
+  # common events that move you (an event can call one)
+  def self.common_warps(ce_id)
+    $rh_cew ||= {}
+    return $rh_cew[ce_id] if $rh_cew.key?(ce_id)
+    ces = ($data_common_events || ($cache.RXevents rescue nil) || (load_data("Data/CommonEvents.rxdata") rescue nil)) rescue nil
+    ce = (ces[ce_id] rescue nil)
+    $rh_cew[ce_id] = ce ? (ce.list || []).find_all { |q| q.code == 201 && q.parameters[0] == 0 }.map { |q| q.parameters[1..3] } : []
+    return $rh_cew[ce_id]
+  rescue
+    return []
   end
 
   # where the live events stand on this map (if this changes, re-plan)
