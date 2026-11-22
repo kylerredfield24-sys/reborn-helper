@@ -1,4 +1,4 @@
-RH_VERSION = 11   # bumped with every release (used by the auto-updater)
+RH_VERSION = 12   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -2318,7 +2318,10 @@ module RH
     why = lost.empty? ? "" : " (you lost #{lost.length}x - new plan)"
     lead = $Trainer.party.find { |p| p && !p.isEgg? && p.hp > 0 }
     if lead && !lead.equal?(best)
-      ok = Kernel.pbConfirmMessage(_INTL("Helper: vs {1} lead with {2}{3}. Move {2} to the front?", foes, best.name, why)) rescue false
+      # default answer = keep YOUR lead (so mashing A never changes your plan)
+      pick = (Kernel.pbMessage(_INTL("Helper suggests leading with {1} vs {2}{3}.", best.name, foes, why),
+                               [_INTL("Keep {1}", lead.name), _INTL("Swap to {1}", best.name)], 1) rescue 0)
+      ok = (pick == 1)
       if ok
         i = $Trainer.party.index(best)
         j = $Trainer.party.index(lead)
