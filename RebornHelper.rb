@@ -1,4 +1,4 @@
-RH_VERSION = 10   # bumped with every release (used by the auto-updater)
+RH_VERSION = 11   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -2283,6 +2283,82 @@ module RH
 end
 
 #==============================================================================
+# Pre-battle coach: right before a trainer fight, tell you who to lead with
+# (and offer to move it to the front). If you lose, it remembers and changes
+# the plan next time.
+#==============================================================================
+module RH
+  def self.battle_key(type, name, pid)
+    "#{type}|#{name}|#{pid}"
+  end
+
+  def self.coach_rank(team, lost)
+    mine = $Trainer.party.find_all { |p| p && !p.isEgg? && p.hp > 0 }
+    mine.sort_by do |p|
+      s = lead_score(p, team)
+      s -= 3.0 * lost.count(p.species)            # led and lost before -> try someone else
+      s += 0.2 * (p.hp.to_f / [p.totalhp, 1].max)
+      -s
+    end
+  end
+
+  def self.prebattle(type, name, pid)
+    d = g
+    return if !d || d[:battle] == false
+    data = (pbLoadTrainer(type, name, pid) rescue nil)
+    return if !data || !data[2] || data[2].empty?
+    team = data[2]
+    key = battle_key(type, name, pid)
+    lost = ((d[:losses] ||= {})[key] ||= [])
+    ranked = coach_rank(team, lost)
+    best = ranked.first
+    return if !best
+    $rh_last_fight = [key, nil]
+    foes = team.map { |p| (p.name rescue p.species.to_s) }.uniq.first(3).join(", ")
+    why = lost.empty? ? "" : " (you lost #{lost.length}x - new plan)"
+    lead = $Trainer.party.find { |p| p && !p.isEgg? && p.hp > 0 }
+    if lead && !lead.equal?(best)
+      ok = Kernel.pbConfirmMessage(_INTL("Helper: vs {1} lead with {2}{3}. Move {2} to the front?", foes, best.name, why)) rescue false
+      if ok
+        i = $Trainer.party.index(best)
+        j = $Trainer.party.index(lead)
+        $Trainer.party[i], $Trainer.party[j] = $Trainer.party[j], $Trainer.party[i] if i && j
+      end
+    elsif !lost.empty?
+      Kernel.pbMessage(_INTL("Helper: {1} leads - good pick vs {2}{3}.", best.name, foes, why)) rescue nil
+    end
+    first = $Trainer.party.find { |p| p && !p.isEgg? && p.hp > 0 }
+    $rh_last_fight = [key, first ? first.species : nil]
+  end
+
+  def self.postbattle(won)
+    return if !$rh_last_fight
+    key, sp = $rh_last_fight
+    $rh_last_fight = nil
+    d = g
+    return if !d
+    if won
+      d[:losses].delete(key) if d[:losses]
+      d[:lostnote] = nil
+    else
+      ((d[:losses] ||= {})[key] ||= []) << sp if sp
+      d[:lostnote] = "Lost a fight - the helper changed its plan. It will tell you who to lead with right before the rematch."
+    end
+  end
+end
+
+Object.send(:alias_method, :rh_pbTrainerBattle, :pbTrainerBattle) if Object.private_method_defined?(:pbTrainerBattle) && !Object.private_method_defined?(:rh_pbTrainerBattle)
+def pbTrainerBattle(trainerid, trainername, endspeech = nil, doublebattle = false, trainerparty = 0, *args, **kw)
+  begin
+    RH.prebattle(trainerid, trainername, trainerparty)
+  rescue
+  end
+  ret = rh_pbTrainerBattle(trainerid, trainername, endspeech, doublebattle, trainerparty, *args, **kw)
+  RH.postbattle(ret ? true : false) rescue nil
+  return ret
+end
+
+#==============================================================================
 # Update channel from Claude (read-only download of a plain-text data file).
 # It only reads text lines - it never runs anything it downloads.
 # Format of updates.txt:
@@ -2779,6 +2855,7 @@ module RH
         end
         r << [:info, "Select a clue to draw the route there.", DIM] if d[:clues].any? { |c| c[:map] }
         r << [:info, "Helper updated - restart the game to use the new version.", GOOD] if RH.updates[:selfupdate]
+        r << [:info, d[:lostnote], BAD] if d[:lostnote]
         RH.updates[:notes].each { |n| r << [:info, "From Claude: " + n, ACCENT] }
         return r
       when "Route"
