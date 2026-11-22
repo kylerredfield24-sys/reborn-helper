@@ -1,4 +1,4 @@
-RH_VERSION = 6   # bumped with every release (used by the auto-updater)
+RH_VERSION = 7   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -147,7 +147,10 @@ module RH
     rescue
       name = f[1][0]
     end
-    bmp.font.name = name if name && !name.empty?
+    # always set the name (an empty lookup used to leave the old font on the bitmap)
+    name = (Font.default_name rescue "Arial") if !name || name.empty? || (name.is_a?(Array) && name.empty?)
+    name = name.first if name.is_a?(Array)
+    bmp.font.name = name
     bmp.font.size = f[2]
     bmp.font.bold = false
   end
@@ -2596,7 +2599,7 @@ module RH
     end
     obj = nil if !d[:hud]
     route = nil if !d[:hud]
-    key = [obj, route]
+    key = [obj, route, d[:font]]
     if key != $rh_hud_key
       $rh_hud_key = key
       b = $rh_hud.bitmap
