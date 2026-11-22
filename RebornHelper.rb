@@ -1,4 +1,4 @@
-RH_VERSION = 7   # bumped with every release (used by the auto-updater)
+RH_VERSION = 8   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -35,7 +35,10 @@ module RH
   FONTS   = [["Clean", ["Arial", "Helvetica", "Liberation Sans"], 11],
              ["Clean small", ["Arial", "Helvetica", "Liberation Sans"], 10],
              ["Clean large", ["Arial", "Helvetica", "Liberation Sans"], 13],
-             ["Game pixel", ["Power Green Small", "Pokemon Emerald Small"], 18]]
+             ["Game pixel", ["Power Green Small", "Pokemon Emerald Small"], 18],
+             # same size as Clean large, but crisper: bold, no blurry drop shadow
+             ["Sharp large", ["Verdana", "Tahoma", "Helvetica", "Arial"], 12, true, false],
+             ["Bold large", ["Arial", "Helvetica", "Liberation Sans"], 13, true, true]]
 
   HEAL_ITEMS = {
     :POTION => 20, :FRESHWATER => 30, :BERRYJUICE => 20, :SODAPOP => 50,
@@ -152,13 +155,16 @@ module RH
     name = name.first if name.is_a?(Array)
     bmp.font.name = name
     bmp.font.size = f[2]
-    bmp.font.bold = false
+    bmp.font.bold = f[3] ? true : false
   end
 
   def self.text(bmp, x, y, w, str, col = TXT, align = 0)
     str = str.to_s
-    bmp.font.color = SHADOW
-    bmp.draw_text(x + 1, y + 1, w, LH + 2, str, align)
+    f = FONTS[(g && g[:font]) || 0] || FONTS[0]
+    if f[4] != false               # "Sharp" style skips the shadow so letters stay crisp
+      bmp.font.color = SHADOW
+      bmp.draw_text(x + 1, y + 1, w, LH + 2, str, align)
+    end
     bmp.font.color = col
     bmp.draw_text(x, y, w, LH + 2, str, align)
   end
