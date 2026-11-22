@@ -1,4 +1,4 @@
-RH_VERSION = 15   # bumped with every release (used by the auto-updater)
+RH_VERSION = 16   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -497,7 +497,7 @@ module RH
     ($game_map.events || {}).each_value do |ev|
       $rh_evpos[[ev.x, ev.y]] = true if climb_wall?((ev.name rescue ""), (ev.list rescue nil))
     end
-    ((g || {})[:blocked] || {}).each_key { |(mid, t)| $rh_evpos[t] = true if mid == $game_map.map_id }
+    ($rh_blocked || {}).each_key { |(mid, t)| $rh_evpos[t] = true if mid == $game_map.map_id }
   rescue
     $rh_evpos = {}
   end
@@ -853,9 +853,9 @@ module RH
   end
 
   # far from the line: small search back to the nearest point of it (cached per tile, so walking stays smooth)
-  def self.rejoin(path, label)
+  def self.rejoin(path, label, cap = 900)
     pos = [$game_player.x, $game_player.y]
-    return $rh_rejoin[1] if $rh_rejoin && $rh_rejoin[0] == [pos, path.length, path.last]
+    return $rh_rejoin[1] if $rh_rejoin && $rh_rejoin[0] == [pos, path.length, path.last] && ($rh_rejoin[1] || $rh_rejoin[2] >= cap)
     on = {}
     path.each_with_index { |t, j| on[t] = j }
     surf = can_surf?
@@ -877,7 +877,7 @@ module RH
         end
         q << n
       end
-      break if prev.size > 900
+      break if prev.size > cap
     end
     res = nil
     if hit
@@ -889,7 +889,7 @@ module RH
       end
       res = [fill_path(link) + path[on[hit]..-1], label]
     end
-    $rh_rejoin = [[pos, path.length, path.last], res]
+    $rh_rejoin = [[pos, path.length, path.last], res, cap]
     return res
   end
 
@@ -906,14 +906,13 @@ module RH
       d = (t[0] - px).abs + (t[1] - py).abs
       best = [d, j] if !best || d < best[0] || (d == best[0] && j > best[1])
     end
-    if !best || best[0] > 5
-      # moving fast (bike): no searching mid-ride, just show the line from its nearest point
-      busy = $game_player.moving? || ($rh_still && $rh_still[0] == [px, py] && Graphics.frame_count - $rh_still[1] < 6) || !$rh_still || $rh_still[0] != [px, py]
-      if busy
-        return nil if !best || best[0] > 40
-        return [[[px, py]] + path[best[1]..-1], label]
-      end
-      return rejoin(path, label)
+    return nil if !best
+    if best[0] > 5
+      # off the line: small search back to it (cached per tile, so it's cheap even on the bike)
+      rj = rejoin(path, label, $game_player.moving? ? 350 : 900)
+      return rj if rj
+      busy = $game_player.moving? || !$rh_still || $rh_still[0] != [px, py] || Graphics.frame_count - $rh_still[1] < 8
+      return nil if !busy || best[0] > 60
     end
     j = best[1]
     tx, ty = path[j]
@@ -965,7 +964,7 @@ module RH
       f = m_flood(md, $game_player.x, $game_player.y)
       dist = static_dist(targets)
       exits = m_exits(md, f).reject { |e| e[0] == $game_map.map_id && !targets.include?(e[0]) }
-      exits = exits.sort_by { |e| dist[e[0]] || 99 }
+      exits = exits.sort_by { |e| [dist[e[0]] || 99, e[0] == $rh_came_from ? 1 : 0] }   # don't bounce back where you came from
       exits.first(4).each do |e|
         path = tile_path(e[3])
         return [path, "towards #{mapname(targets.first)} via #{mapname(e[0])}"] if !path.empty?
@@ -975,26 +974,9 @@ module RH
     return [[], "towards #{mapname(targets.first)}"]
   end
 
-  # returns [path, label]
-  def self.nav_path
+  # what the line should lead to right now: [cache key, story record or nil]
+  def self.nav_want
     d = g
-    return nil if !d || !d[:nav] || !$game_map
-    # while walking, or right after a search, reuse the last answer (keeps the game smooth)
-    if $rh_nav_cache && $rh_nav_cache[0][0] == $game_map.map_id
-      c = $rh_nav_cache[1]
-      pos0 = [$game_player.x, $game_player.y]
-      $rh_still = [pos0, Graphics.frame_count] if $rh_still.nil? || $rh_still[0] != pos0
-      f = follow(c[0], c[1])
-      return f if f                                 # still on (or near) the line: no search needed
-      pos = [$game_player.x, $game_player.y]
-      if $rh_still.nil? || $rh_still[0] != pos
-        $rh_still = [pos, Graphics.frame_count]
-      end
-      if $game_player.moving? || (Graphics.frame_count - $rh_still[1]) < 10 || (Graphics.frame_count - ($rh_nav_time || -999)) < 30
-        return c                                    # lost the line while moving: re-plan once you stand still
-      end
-    end
-    $rh_nav_time = Graphics.frame_count
     target = d[:nav]
     here = $game_map.map_id
     if target == :story
@@ -1003,11 +985,44 @@ module RH
       r = rs if rs
       u = (update_obj rescue nil)
       r = { :map => u[:map], :id => 0, :x => u[:x], :y => u[:y], :to => u[:val] } if u && u[:map] > 0
-      return nil if !r
-      return [[], "follow the goal above"] if r[:map].to_i <= 0
-      key = [here, :story, r[:map], r[:to], r[:id], r[:x], r[:y]]
-      t = trim_cached(key)
-      return t if t
+      return [nil, nil] if !r
+      # a person who walks around keeps the same goal (don't re-plan every time they take a step)
+      spot = r[:id].to_i > 0 ? [r[:id]] : [r[:id], r[:x], r[:y]]
+      return [[here, :story, r[:map], r[:to]] + spot, r]
+    end
+    tl = target.is_a?(Array) ? target : [target]
+    return [[here, tl], nil]
+  end
+
+  # returns [path, label]
+  def self.nav_path
+    d = g
+    return nil if !d || !d[:nav] || !$game_map
+    target = d[:nav]
+    here = $game_map.map_id
+    if target != :story && (target.is_a?(Array) ? target.include?(here) : target == here)
+      d[:nav] = nil
+      return nil
+    end
+    key, r = nav_want
+    return nil if !key
+    return [[], "follow the goal above"] if r && r[:map].to_i <= 0
+    pos = [$game_player.x, $game_player.y]
+    $rh_still = [pos, Graphics.frame_count] if $rh_still.nil? || $rh_still[0] != pos
+    if $rh_nav_cache && $rh_nav_cache[0] == key
+      c = $rh_nav_cache[1]
+      f = (c[0].empty? && $rh_nav_cache[2] == pos) ? c : follow(c[0], c[1])
+      return f if f                                 # on (or near) the line: no search needed
+      # lost the line: keep showing it until you stand still, then plan again
+      return c if $game_player.moving? || (Graphics.frame_count - $rh_still[1]) < 8 || (Graphics.frame_count - ($rh_nav_time || -999)) < 20
+    elsif $rh_nav_cache && $rh_nav_cache[0][0] == here && $game_player.moving? && (Graphics.frame_count - ($rh_nav_time || -999)) < 40
+      # the goal just changed mid-step: finish the step on the old line, re-plan right after
+      c = $rh_nav_cache[1]
+      f = follow(c[0], c[1])
+      return f if f
+    end
+    $rh_nav_time = Graphics.frame_count
+    if r
       if r[:map] == here && r[:id].to_i == 0 && r[:x].to_i == 0
         res = [[], "you're in the right area"]
       elsif r[:map] == here
@@ -1019,19 +1034,10 @@ module RH
       else
         res = route_to([r[:map]], spot_tiles(r))
       end
-      $rh_nav_cache = [key, res, [$game_player.x, $game_player.y]]
-      return res
+    else
+      res = route_to(key[1])
     end
-    if target.is_a?(Array) ? target.include?(here) : target == here
-      d[:nav] = nil
-      return nil
-    end
-    tl = target.is_a?(Array) ? target : [target]
-    key = [here, tl]
-    t = trim_cached(key)
-    return t if t
-    res = route_to(tl)
-    $rh_nav_cache = [key, res, [$game_player.x, $game_player.y]]
+    $rh_nav_cache = [key, res, pos]
     return res
   end
 end
@@ -1154,6 +1160,32 @@ module RH
         end
       end
     end
+    # cutscenes that start the moment you arrive and carry you somewhere else
+    # (e.g. sliding down a waterfall sets a value, then a scene walks you inside)
+    tv = transit_vars(id)
+    (m.events || {}).each do |eid, ev|
+      # try "as things are now" plus each value the way in can set
+      tries = [nil] + tv.flat_map { |v, vals| vals.map { |x| [v, x] } }
+      tries.each do |tvar, tval|
+        ev.pages.reverse_each do |op|
+          c = op.condition
+          next if c.switch1_valid && !($game_switches[c.switch1_id] rescue false)
+          next if c.switch2_valid && !($game_switches[c.switch2_id] rescue false)
+          next if c.self_switch_valid && !($game_self_switches[[id, ev.id, c.self_switch_ch]] rescue false)
+          if c.variable_valid
+            cur = (c.variable_id == tvar) ? tval : ($game_variables[c.variable_id] rescue 0).to_i
+            next if cur < c.variable_value
+          end
+          # this is the page that will be live when you arrive
+          if op.trigger == 3
+            cmd = (op.list || []).find { |q| q.code == 201 && q.parameters[0] == 0 }
+            w = [ev.x, ev.y, cmd.parameters[1], cmd.parameters[2], cmd.parameters[3], :auto] if cmd && cmd.parameters[1] != id
+            md[:warps] << w if w && !md[:warps].include?(w)
+          end
+          break
+        end
+      end
+    end
     (m.events || {}).each do |eid, ev|
       pg = active_page(id, ev)
       next if !pg
@@ -1174,9 +1206,36 @@ module RH
         sort_blocker(md, ev.x, ev.y, ev.through, ev.tile_id, ev.character_name, (ev.list rescue nil), (ev.name rescue "")) rescue nil
       end
     end
-    ((g || {})[:blocked] || {}).each_key { |(mid, t)| md[:block][t] = true if mid == id }   # learned walls
+    ($rh_blocked || {}).each_key { |(mid, t)| md[:block][t] = true if mid == id }   # learned walls (this visit only)
     db[:models][key] = md
     return md
+  end
+
+  # values that get set on the way INTO a map (by the event that sends you there): var => value
+  def self.transit_vars(id)
+    $rh_transit ||= {}
+    return $rh_transit[id] if $rh_transit[id]
+    out = {}
+    srcs = []
+    warps.each { |from, list| srcs << from if list.any? { |w| w[2] == id } }
+    srcs.uniq.each do |sid|
+      sm = ($cache.map_load(sid) rescue nil)
+      next if !sm
+      (sm.events || {}).each_value do |ev|
+        ev.pages.each do |pg|
+          l = pg.list || []
+          next if !l.any? { |q| q.code == 201 && q.parameters[0] == 0 && q.parameters[1] == id }
+          l.each do |q|
+            next if q.code != 122 || q.parameters[2] != 0 || q.parameters[3] != 0 || q.parameters[0] != q.parameters[1]
+            next if STORY_VARS.include?(q.parameters[0])
+            (out[q.parameters[0]] ||= []) << q.parameters[4]
+            out[q.parameters[0]].uniq!
+          end
+        end
+      end
+    end
+    $rh_transit[id] = out
+    return out
   end
 
   # where the live events stand on this map (if this changes, re-plan)
@@ -1297,6 +1356,10 @@ module RH
     return f[:exits] if f[:exits]
     out = []
     md[:warps].each do |x, y, to, tx, ty, lv|
+      if lv == :auto      # happens by itself as soon as you arrive
+        out << [to, tx, ty, [f[:tiles].keys.first], :walk]
+        next
+      end
       out << [to, tx, ty, [[x, y]], lv ? :lever : :walk] if touch?(f[:tiles], x, y)
     end
     w = md[:w]
@@ -2788,11 +2851,14 @@ module RH
     dy = dir == 8 ? -1 : dir == 2 ? 1 : 0
     tgt = [$game_player.x + dx, $game_player.y + dy]
     return if nav[0][1] != tgt            # only when you're following the dots
+    return if ($PokemonGlobal.surfing rescue false) || (RH.ice?($game_player.x, $game_player.y) rescue false)
+    return if ($game_map.events || {}).values.any? { |e| e.x == tgt[0] && e.y == tgt[1] }   # someone standing there - they move
     key = [$game_map.map_id, tgt]
     if !$rh_bump || $rh_bump[0] != key
       $rh_bump = [key, Graphics.frame_count]
     elsif Graphics.frame_count - $rh_bump[1] > 45
-      (g[:blocked] ||= {})[key] = true
+      ($rh_blocked ||= {})[key] = true
+      g[:blocked] = nil
       $rh_bump = nil
       $rh_nav_cache = nil
       $rh_route_db = nil
@@ -2814,11 +2880,13 @@ module RH
       hud_hide
       return
     end
-    nav = (nav_path rescue nil)
-    obj = objective
+    nav = begin; nav_path; rescue => e; log_err(e, "route"); $rh_nav_cache = nil; nil; end
+    obj = begin; objective; rescue => e; log_err(e, "goal"); $rh_obj_last; end
+    $rh_obj_last = obj
     route = nil
     if nav
-      route = nav[0].empty? ? "Route: #{nav[1]}" : "Route: to #{nav[1]}  (#{nav[0].length - 1} steps)"
+      lbl = nav[1].to_s =~ /\A(towards|follow|you're|story|dark|surface)/ ? nav[1] : "to #{nav[1]}"
+      route = nav[0].empty? ? "Route: #{nav[1]}" : "Route: #{lbl}  (#{nav[0].length - 1} steps)"
     end
     obj = nil if !d[:hud]
     route = nil if !d[:hud]
@@ -2898,6 +2966,7 @@ module RH
     np = (nav_path rescue nil)
     t << "Helper route: #{np ? "#{np[1]} (#{np[0].length} steps)" : 'none'}"
     t << "Helper error: #{$rh_plan_err}" if $rh_plan_err
+    t << "Helper crash: #{$rh_last_err}" if $rh_last_err
     t << "Helper version: #{RH_VERSION}"
     dex = $Trainer.pokedex rescue nil
     t << "Pokedex: seen #{dex.getSeenCount} / owned #{dex.getOwnedCount}" if dex
@@ -2971,7 +3040,15 @@ module RH
       @vp.dispose
     end
 
+    # one broken tab never stops the menu from opening
     def rows
+      return rows_raw
+    rescue => e
+      RH.log_err(e, "menu tab #{TABS[@tab]}")
+      return [[:info, "This tab hit a problem (saved to RebornHelper_errors.txt). Other tabs still work.", BAD]]
+    end
+
+    def rows_raw
       d = RH.g
       case TABS[@tab]
       when "Goal"
@@ -3120,16 +3197,16 @@ module RH
       y = 34
       maxy = H - 42
       # scroll so the selection is visible
-      heights = rs.map { |r| [RH.wrap(b, r[1], PW - 28).length, 1].max * RH::RH.lh + 3 }
+      heights = rs.map { |r| [RH.wrap(b, r[1], PW - 28).length, 1].max * RH.lh + 3 }
       start = 0
       start += 1 while start < @sel && heights[start..@sel].sum > maxy - y
       rs.each_with_index do |r, i|
         next if i < start
         ls = RH.wrap(b, r[1], PW - 28)
-        break if y + ls.length * RH::RH.lh > maxy
+        break if y + ls.length * RH.lh > maxy
         if i == @sel
-          b.fill_rect(x0 + 6, y - 1, PW - 12, ls.length * RH::RH.lh + 2, BG2)
-          b.fill_rect(x0 + 6, y - 1, 2, ls.length * RH::RH.lh + 2, ACCENT) if r[0] != :info
+          b.fill_rect(x0 + 6, y - 1, PW - 12, ls.length * RH.lh + 2, BG2)
+          b.fill_rect(x0 + 6, y - 1, 2, ls.length * RH.lh + 2, ACCENT) if r[0] != :info
         end
         if r[0] == :mon
           p = $Trainer.party[r[3]]
@@ -3137,13 +3214,13 @@ module RH
           ls = RH.wrap(b, r[1], PW - 52)
           ls.each do |l|
             RH.text(b, x0 + 38, y, PW - 48, l, r[2])
-            y += RH::RH.lh
+            y += RH.lh
           end
           y += 4
         else
           ls.each do |l|
             RH.text(b, x0 + 14, y, PW - 24, l, r[2])
-            y += RH::RH.lh
+            y += RH.lh
           end
         end
         y += 3
@@ -3161,12 +3238,12 @@ module RH
           det.each do |l|
             break if y > maxy
             RH.text(b, x0 + 14, y, PW - 24, l, DIM)
-            y += RH::RH.lh
+            y += RH.lh
           end
         end
       end
       if @note
-        RH.wrap(b, @note, PW - 24).first(2).each_with_index { |l, i| RH.text(b, x0 + 12, H - 36 + i * RH::RH.lh, PW - 24, l, WARN) }
+        RH.wrap(b, @note, PW - 24).first(2).each_with_index { |l, i| RH.text(b, x0 + 12, H - 36 + i * RH.lh, PW - 24, l, WARN) }
       else
         RH.text(b, x0 + 12, H - 22, PW - 24, "Left/Right tabs   A select   B close", DIM)
       end
@@ -3208,13 +3285,25 @@ module RH
     end
   end
 
+  # problems get written to RebornHelper_errors.txt (and shown in Copy context) instead of failing silently
+  def self.log_err(e, where = "")
+    msg = "#{where}: #{e.class}: #{e.message} @ #{(e.backtrace || []).first(3).join(' | ')}"
+    return if $rh_last_err == msg
+    $rh_last_err = msg
+    File.open("./patch/Mods/RebornHelper_errors.txt", "a") { |f| f.puts("[v#{RH_VERSION}] " + msg) } rescue nil
+  end
+
   def self.open_menu
     hud_hide
     m = Menu.new
     begin
       m.run
+    rescue Exception => e
+      raise if e.is_a?(SystemExit) || e.class.name == "Reset"
+      log_err(e, "menu")
+      g[:tab] = 0
     ensure
-      m.dispose
+      m.dispose rescue nil
     end
     $rh_hud_key = nil
     $rh_nav_cache = nil
@@ -3236,6 +3325,11 @@ class Scene_Map
         $rh_clearpos = nil
         $rh_region_entry = [$game_map.map_id, $rh_came_from]
         $rh_nav_cache = nil
+        if $rh_blocked || (RH.g && RH.g[:blocked])   # learned walls only last while you're on that map
+          $rh_blocked = nil
+          RH.g[:blocked] = nil if RH.g
+          $rh_route_db = nil
+        end
         RH.mark_visited
       end
       free = !pbMapInterpreterRunning? && !$game_temp.message_window_showing && !$game_player.moving? &&
@@ -3248,7 +3342,8 @@ class Scene_Map
       end
       $rh_hud_frame = Graphics.frame_count
       RH.hud_update
-    rescue
+    rescue => e
+      RH.log_err(e, "map") rescue nil
       RH.hud_hide rescue nil
     end
   end
