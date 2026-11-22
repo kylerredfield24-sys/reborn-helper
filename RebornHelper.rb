@@ -1,4 +1,4 @@
-RH_VERSION = 9   # bumped with every release (used by the auto-updater)
+RH_VERSION = 10   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -1154,10 +1154,10 @@ module RH
         sort_blocker(md, ev.x, ev.y, pg.through, gfx.tile_id, gfx.character_name, pg.list, ev.name)
       end
       next if pg.trigger == 3 || pg.trigger == 4
+      # every destination this event can send you to (trains / boats / menus have several)
       (pg.list || []).each do |cmd|
         if cmd.code == 201 && cmd.parameters[0] == 0
           md[:warps] << [ev.x, ev.y, cmd.parameters[1], cmd.parameters[2], cmd.parameters[3]]
-          break
         end
       end
     end
