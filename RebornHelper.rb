@@ -1,4 +1,4 @@
-RH_VERSION = 8   # bumped with every release (used by the auto-updater)
+RH_VERSION = 9   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -309,7 +309,9 @@ module RH
   end
 
   def self.objective
-    key = [STORY_VARS.map { |v| ($game_variables[v] rescue 0) }, ($Trainer.numbadges rescue 0), sw?(499), has_item?(:HM06), ((rule_step || {})[:text] rescue nil), (g[:clues].first rescue nil), (updates[:obj].length rescue 0), ($game_map.map_id rescue 0)]
+    key = [STORY_VARS.map { |v| ($game_variables[v] rescue 0) }, ($Trainer.numbadges rescue 0), sw?(499), has_item?(:HM06), ((rule_step || {})[:text] rescue nil), (g[:clues].first rescue nil), (updates[:obj].length rescue 0), ($game_map.map_id rescue 0),
+           (pbMapInterpreterRunning? rescue false),
+           ((lr = (live_step rescue nil)) ? [lr[:map], lr[:id], lr[:x], lr[:y]] : nil), ($game_player.x / 4 rescue 0), ($game_player.y / 4 rescue 0)]
     return $rh_obj[1] if $rh_obj && $rh_obj[0] == key
     res = objective_uncached
     $rh_obj = [key, res]
@@ -1575,9 +1577,18 @@ module RH
 
   def self.live_step
     k = [STORY_VARS.map { |v| ($game_variables[v] rescue 0) }, ($game_map.map_id rescue 0), ($game_self_switches.instance_variable_get(:@data).length rescue 0)]
-    return $rh_live[1] if $rh_live && $rh_live[0] == k
-    r = live_step_now
-    $rh_live = [k, r]
+    busy = (pbMapInterpreterRunning? rescue false)
+    if $rh_live && ($rh_live[0] == k || busy)   # during a cutscene keep the old answer, re-check after it ends
+      r = $rh_live[1]
+    else
+      r = live_step_now
+      $rh_live = [k, r]
+    end
+    # people move during scenes: always use where the event stands right now
+    if r && r[:map] == ($game_map.map_id rescue -1) && (ge = ($game_map.events[r[:id]] rescue nil))
+      r[:x] = ge.x
+      r[:y] = ge.y
+    end
     return r
   end
 
@@ -1637,6 +1648,7 @@ module RH
       dx = r[:x] - $game_player.x
       dy = r[:y] - $game_player.y
       return "right here" if dx.abs + dy.abs <= 1
+      return "right next to you" if dx.abs <= 2 && dy.abs <= 2
       ns = dy < -2 ? "north" : dy > 2 ? "south" : ""
       ew = dx < -2 ? "west" : dx > 2 ? "east" : ""
       return "#{ns}#{ew}".sub("northwest", "north-west").sub("northeast", "north-east").sub("southwest", "south-west").sub("southeast", "south-east") + " of you, ~#{dx.abs + dy.abs} steps"
