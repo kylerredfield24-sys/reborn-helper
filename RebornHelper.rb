@@ -1,4 +1,4 @@
-RH_VERSION = 14   # bumped with every release (used by the auto-updater)
+RH_VERSION = 15   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -497,6 +497,7 @@ module RH
     ($game_map.events || {}).each_value do |ev|
       $rh_evpos[[ev.x, ev.y]] = true if climb_wall?((ev.name rescue ""), (ev.list rescue nil))
     end
+    ((g || {})[:blocked] || {}).each_key { |(mid, t)| $rh_evpos[t] = true if mid == $game_map.map_id }
   rescue
     $rh_evpos = {}
   end
@@ -1173,6 +1174,7 @@ module RH
         sort_blocker(md, ev.x, ev.y, ev.through, ev.tile_id, ev.character_name, (ev.list rescue nil), (ev.name rescue "")) rescue nil
       end
     end
+    ((g || {})[:blocked] || {}).each_key { |(mid, t)| md[:block][t] = true if mid == id }   # learned walls
     db[:models][key] = md
     return md
   end
@@ -2772,9 +2774,36 @@ module RH
     end
   end
 
+  # if you keep pushing toward the next dot and can't move, that tile is blocked for you:
+  # remember it and plan around it (catches anything the helper didn't know you can't do yet)
+  def self.bump_learn
+    dir = (Input.dir4 rescue 0)
+    if dir == 0 || $game_player.moving? || (pbMapInterpreterRunning? rescue false)
+      $rh_bump = nil
+      return
+    end
+    nav = $rh_nav_cache && $rh_nav_cache[1]
+    return if !nav || nav[0].length < 2
+    dx = dir == 4 ? -1 : dir == 6 ? 1 : 0
+    dy = dir == 8 ? -1 : dir == 2 ? 1 : 0
+    tgt = [$game_player.x + dx, $game_player.y + dy]
+    return if nav[0][1] != tgt            # only when you're following the dots
+    key = [$game_map.map_id, tgt]
+    if !$rh_bump || $rh_bump[0] != key
+      $rh_bump = [key, Graphics.frame_count]
+    elsif Graphics.frame_count - $rh_bump[1] > 45
+      (g[:blocked] ||= {})[key] = true
+      $rh_bump = nil
+      $rh_nav_cache = nil
+      $rh_route_db = nil
+      $rh_evpos = nil
+    end
+  end
+
   def self.hud_update
     hud_build
     tick_refresh rescue nil
+    bump_learn rescue nil
     d = g
     fetch_updates if !$rh_fetching
     if d && !d[:navinit]
