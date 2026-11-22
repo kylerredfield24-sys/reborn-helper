@@ -1,4 +1,4 @@
-RH_VERSION = 12   # bumped with every release (used by the auto-updater)
+RH_VERSION = 13   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -32,13 +32,21 @@ module RH
   ACCENT  = Color.new(130, 190, 255)
   SHADOW  = Color.new(0, 0, 0, 120)
   LH      = 12
+
+  # line height for the chosen font
+  def self.lh
+    f = FONTS[(g && g[:font]) || 0] || FONTS[0]
+    return f[5] || LH
+  end
   FONTS   = [["Clean", ["Arial", "Helvetica", "Liberation Sans"], 11],
              ["Clean small", ["Arial", "Helvetica", "Liberation Sans"], 10],
              ["Clean large", ["Arial", "Helvetica", "Liberation Sans"], 13],
-             ["Game pixel", ["Power Green Small", "Pokemon Emerald Small"], 18],
+             ["Game pixel", ["Power Green Small", "Pokemon Emerald Small"], 25, false, true, 16],
              # same size as Clean large, but crisper: bold, no blurry drop shadow
              ["Sharp large", ["Verdana", "Tahoma", "Helvetica", "Arial"], 12, true, false],
-             ["Bold large", ["Arial", "Helvetica", "Liberation Sans"], 13, true, true]]
+             ["Bold large", ["Arial", "Helvetica", "Liberation Sans"], 13, true, true],
+             # pixel-perfect: the game's own clean font at its native size (no blur when the window is scaled)
+             ["Crisp HD", ["Power Clear", "Power Green", "Pokemon Emerald"], 25, false, false, 16]]
 
   HEAL_ITEMS = {
     :POTION => 20, :FRESHWATER => 30, :BERRYJUICE => 20, :SODAPOP => 50,
@@ -163,10 +171,10 @@ module RH
     f = FONTS[(g && g[:font]) || 0] || FONTS[0]
     if f[4] != false               # "Sharp" style skips the shadow so letters stay crisp
       bmp.font.color = SHADOW
-      bmp.draw_text(x + 1, y + 1, w, LH + 2, str, align)
+      bmp.draw_text(x + 1, y + 1, w, RH.lh + 2, str, align)
     end
     bmp.font.color = col
-    bmp.draw_text(x, y, w, LH + 2, str, align)
+    bmp.draw_text(x, y, w, RH.lh + 2, str, align)
   end
 
   def self.wrap(bmp, str, w)
@@ -1735,7 +1743,7 @@ module RH
   end
 
   def self.foes(battle)
-    live = [1, 3].map { |i| battle.battlers[i] }.compact.find_all { |b| b.hp > 0 && !b.isFainted? }
+    live = [3, 1].map { |i| battle.battlers[i] }.compact.find_all { |b| b.hp > 0 && !b.isFainted? }   # screen order: left, right
     return live if !live.empty?
     return [@incoming] if @incoming && @incoming.hp > 0   # foe that is about to be sent in
     return []
@@ -1896,8 +1904,18 @@ module RH
   end
 
   def self.draw_lines(bmp, lines, w)
+    # long advice lines (no value on the right) wrap instead of being cut off
+    out = []
+    lines.each do |l, r, c|
+      if r.to_s.empty? && bmp.text_size(l.to_s).width > w - 12
+        wrap(bmp, l.to_s, w - 12).first(3).each { |x| out << [x, "", c] }
+      else
+        out << [l, r, c]
+      end
+    end
+    lines = out
     x0 = W - w - 2
-    h = lines.length * LH + 6
+    h = lines.length * RH.lh + 6
     bmp.fill_rect(x0, 2, w, h, BG)
     bmp.fill_rect(x0, 2, 1, h, ACCENT)
     y = 5
@@ -1905,7 +1923,7 @@ module RH
       rw = r.to_s.empty? ? 0 : bmp.text_size(r).width + 6
       text(bmp, x0 + 6, y, w - 10 - rw, cut(bmp, l, w - 12 - rw), c)
       text(bmp, x0 + 4, y, w - 9, r, c, 2) if rw > 0
-      y += LH
+      y += RH.lh
     end
   end
 
@@ -1955,8 +1973,72 @@ module RH
     return { :me => me, :foes => fs, :rows => rows, :best => best, :danger => danger, :perfoe => perfoe }
   end
 
+  RECOIL = { :BRAVEBIRD => 3, :FLAREBLITZ => 3, :WOODHAMMER => 3, :DOUBLEEDGE => 3, :VOLTTACKLE => 3,
+             :HEADSMASH => 2, :WILDCHARGE => 4, :TAKEDOWN => 4, :SUBMISSION => 4, :HEADCHARGE => 4, :LIGHTOFRUIN => 2 }
+
+  def self.special_move?(user, m)
+    return (m.pbIsSpecial?(user, m.type) rescue (($cache.moves[m.move].category == :special) rescue false))
+  end
+
+  def self.side_fx(battle, idx, key)
+    (battle.sides[idx & 1].effects[key] rescue 0).to_i
+  end
+
+  # strategy layer: screens, free switches (immunities), sacrificing for a safe switch-in, recoil
+  def self.strategy(battle, a)
+    me = a[:me]
+    best = a[:best]
+    dg = a[:danger]
+    return nil if !dg
+    hit, hitlo, foe, fmove = dg
+    dies = hit >= me.hp
+    foe_first = !faster?(me, foe, battle)
+    big = hit >= me.totalhp * 0.45
+    ko_now = best && best[5] == 2
+    return nil if ko_now && (!dies || !foe_first)
+    # 1) screens: halve their big hits for 5 turns (only if you survive setting it)
+    if hitlo < me.hp && big && !(best && best[4] >= foe.hp)   # you usually live through one hit
+      spc = special_move?(foe, fmove)
+      want = spc ? [:LIGHTSCREEN, :AURORAVEIL] : [:REFLECT, :AURORAVEIL]
+      key = spc ? :LightScreen : :Reflect
+      if side_fx(battle, me.index, key) == 0 && side_fx(battle, me.index, :AuroraVeil) == 0
+        sm = me.moves.find { |m| m && m.move && want.include?(m.move) && m.pp > 0 }
+        return ["Set #{mname(sm.move)} - halves #{short(foe.name)}'s #{spc ? 'special' : 'physical'} hits for 5 turns", GOOD] if sm
+      end
+    end
+    # 2) a teammate is immune to the move they're about to use -> free switch
+    if (dies || big)
+      bench = (rank_switches(battle, me.index, false) rescue [])
+      bench.each do |o|
+        fake = (battle.ai.pbMakeFakeBattler(o[:mon], $Trainer.party.index(o[:mon]), false, me.index) rescue nil)
+        next if !fake
+        flo, fhi = dmg(battle, foe, fake, fmove)
+        next if fhi > 0 || o[:faints]
+        return ["Switch to #{o[:mon].name} - immune to #{mname(fmove.move)} (free switch)", GOOD]
+      end
+    end
+    # 3) you go down this turn no matter what: hit first if you can, then the next one comes in for free
+    if dies && foe_first
+      safe = (rank_switches(battle, me.index, false) rescue []).find { |o| !o[:faints] }
+      if !safe
+        nxt = (rank_switches(battle, me.index, true) rescue []).first
+        if nxt && best
+          return ["Attack: #{best[1][:name]} - if you faint, send #{nxt[:mon].name} in free (no hit taken)", WARN]
+        end
+      end
+    end
+    # 4) recoil would knock you out
+    if best && (div = RECOIL[(me.moves.find { |m| m && mname(m.move) == best[1][:name] }.move rescue nil)])
+      rec = [best[3], best[2].hp].min / div
+      return ["Attack: #{best[1][:name]} (recoil ~#{rec} will KO you - make it count)", WARN] if rec >= me.hp && !ko_now
+    end
+    return nil
+  end
+
   # One clear decision, based on everyone's CURRENT HP and speed.
   def self.advice(battle, a)
+    st = (strategy(battle, a) rescue nil)
+    return st if st
     me = a[:me]
     best = a[:best]
     dg = a[:danger]
@@ -2583,7 +2665,7 @@ module RH
     lines = [["Choice help", ACCENT]]
     items.each { |t, col| wrap(b, t.to_s, w).first(4).each { |l| lines << [l, col] } }
     b.dispose
-    h = lines.length * LH + 8
+    h = lines.length * RH.lh + 8
     choice_hide
     vp = Viewport.new(0, 0, Graphics.width, Graphics.height)
     vp.z = 100_010
@@ -2592,7 +2674,7 @@ module RH
     $rh_choice.bitmap.fill_rect(0, 0, w + 12, h, BG)
     $rh_choice.bitmap.fill_rect(0, 0, 2, h, ACCENT)
     font($rh_choice.bitmap)
-    lines.each_with_index { |(t, col), i| text($rh_choice.bitmap, 8, 4 + i * LH, w, t, col) }
+    lines.each_with_index { |(t, col), i| text($rh_choice.bitmap, 8, 4 + i * RH.lh, w, t, col) }
     $rh_choice.x = 4
     $rh_choice.y = 4
   end
@@ -2655,7 +2737,7 @@ module RH
     $rh_hud_vp = Viewport.new(0, 0, W, H)
     $rh_hud_vp.z = 99_990
     $rh_hud = Sprite.new($rh_hud_vp)
-    $rh_hud.bitmap = Bitmap.new(W, 90)
+    $rh_hud.bitmap = Bitmap.new(W, 140)
     $rh_hud.z = 10
     $rh_dot_bmp = Bitmap.new(32, 32)
     c = Color.new(255, 214, 90, 150)
@@ -2709,13 +2791,13 @@ module RH
       if !lines.empty?
         w = 152
         x0 = W - w - 4
-        h = lines.length * LH + 6
+        h = lines.length * RH.lh + 6
         b.fill_rect(x0, 4, w, h, BG)
         b.fill_rect(x0, 4, 2, h, ACCENT)
         y = 6
         lines.each do |l, col|
           text(b, x0 + 8, y, w - 12, l, col)
-          y += LH
+          y += RH.lh
         end
       end
     end
@@ -2994,16 +3076,16 @@ module RH
       y = 34
       maxy = H - 42
       # scroll so the selection is visible
-      heights = rs.map { |r| [RH.wrap(b, r[1], PW - 28).length, 1].max * RH::LH + 3 }
+      heights = rs.map { |r| [RH.wrap(b, r[1], PW - 28).length, 1].max * RH::RH.lh + 3 }
       start = 0
       start += 1 while start < @sel && heights[start..@sel].sum > maxy - y
       rs.each_with_index do |r, i|
         next if i < start
         ls = RH.wrap(b, r[1], PW - 28)
-        break if y + ls.length * RH::LH > maxy
+        break if y + ls.length * RH::RH.lh > maxy
         if i == @sel
-          b.fill_rect(x0 + 6, y - 1, PW - 12, ls.length * RH::LH + 2, BG2)
-          b.fill_rect(x0 + 6, y - 1, 2, ls.length * RH::LH + 2, ACCENT) if r[0] != :info
+          b.fill_rect(x0 + 6, y - 1, PW - 12, ls.length * RH::RH.lh + 2, BG2)
+          b.fill_rect(x0 + 6, y - 1, 2, ls.length * RH::RH.lh + 2, ACCENT) if r[0] != :info
         end
         if r[0] == :mon
           p = $Trainer.party[r[3]]
@@ -3011,13 +3093,13 @@ module RH
           ls = RH.wrap(b, r[1], PW - 52)
           ls.each do |l|
             RH.text(b, x0 + 38, y, PW - 48, l, r[2])
-            y += RH::LH
+            y += RH::RH.lh
           end
           y += 4
         else
           ls.each do |l|
             RH.text(b, x0 + 14, y, PW - 24, l, r[2])
-            y += RH::LH
+            y += RH::RH.lh
           end
         end
         y += 3
@@ -3035,12 +3117,12 @@ module RH
           det.each do |l|
             break if y > maxy
             RH.text(b, x0 + 14, y, PW - 24, l, DIM)
-            y += RH::LH
+            y += RH::RH.lh
           end
         end
       end
       if @note
-        RH.wrap(b, @note, PW - 24).first(2).each_with_index { |l, i| RH.text(b, x0 + 12, H - 36 + i * RH::LH, PW - 24, l, WARN) }
+        RH.wrap(b, @note, PW - 24).first(2).each_with_index { |l, i| RH.text(b, x0 + 12, H - 36 + i * RH::RH.lh, PW - 24, l, WARN) }
       else
         RH.text(b, x0 + 12, H - 22, PW - 24, "Left/Right tabs   A select   B close", DIM)
       end

@@ -1,4 +1,4 @@
-version|12
+version|13
 note|Blake's room: the helper now walks you through the secret-passage puzzle step by step.
 note|Picking Yes/No? The top-left panel shows what each answer does.
 note|After the Ametrine mountain top: go to the Big Top in Agate Circus and talk to Samson. Way: back down to Ametrine Mountain 2F, take its Route 2 exit, then the Agate Circus checkpoint.
