@@ -1,4 +1,4 @@
-RH_VERSION = 19   # bumped with every release (used by the auto-updater)
+RH_VERSION = 20   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -678,9 +678,12 @@ module RH
   def self.tile_path(goals)
     bike = ($PokemonGlobal.bicycle rescue false)
     $PokemonGlobal.bicycle = false if bike
+    $rh_tp_bike = bike
     return rh_tile_path(goals)
   ensure
-    $PokemonGlobal.bicycle = true if bike
+    back = bike && $rh_tp_bike     # (if you got off the bike meanwhile, leave it that way)
+    $rh_tp_bike = nil
+    $PokemonGlobal.bicycle = true if back
   end
 
   def self.rh_tile_path(goals)
@@ -705,6 +708,7 @@ module RH
     found = nil
     until q.empty?
       cx, cy = q.shift
+      slice! if (prev.size & 255) == 0
       dirs.each do |d, dx, dy|
         ax = cx + dx
         ay = cy + dy
@@ -913,7 +917,10 @@ module RH
     return nil if !best
     if best[0] > 1
       # off the line: find a real way back to it using the game's own walls (never draw through rocks)
-      rj = rejoin(path, label, $game_player.moving? ? 350 : 900)
+      if $game_player.moving? && best[0] <= 3
+        return [path[best[1]..-1], label]      # just a step or two off while walking: no search needed
+      end
+      rj = rejoin(path, label, $game_player.moving? ? 150 : 900)
       return rj if rj
       busy = $game_player.moving? || !$rh_still || $rh_still[0] != [px, py] || Graphics.frame_count - $rh_still[1] < 8
       return nil if !busy || best[0] > 60
@@ -947,8 +954,10 @@ module RH
 
   # smart plan first (real map data), then the simple map graph as a backup
   def self.route_to(targets, spot = nil)
+    sure_no = true     # every search finished and found no way at all
     [false, true, :people].each do |relax|
       pl = (plan(targets, spot, relax) rescue nil)
+      sure_no = false if pl.nil?
       next if !pl
       path = tile_path(pl[1])
       path = model_path(pl[1]) if path.empty?   # someone's standing in the way right now - still show the line
@@ -959,7 +968,27 @@ module RH
       lbl += " (walk around / talk to people in the way)" if relax == :people
       return [path, lbl]
     end
+    # the game often has several copies of one place (before / after a story event):
+    # if this copy can't be reached, head for a copy of it that can
+    if !targets.any? { |t| twin_of?(t) }
+      names = targets.map { |t| mapname(t) }.uniq
+      twins = all_map_ids.find_all { |i| !targets.include?(i) && names.include?(mapname(i)) }
+      return [[], "you're in the right area"] if twins.include?($game_map.map_id)
+      if !twins.empty?
+        $rh_twin_try = true
+        begin
+          res = route_to(twins)
+        ensure
+          $rh_twin_try = false
+        end
+        return res if res && !res[0].empty? && res[1] !~ /\Atowards /
+      end
+    end
+    # the full search looked everywhere: don't send you wandering, say so (and the goal gets re-picked)
+    return [[], "no way to #{mapname(targets.first)} from here yet - the story goes on somewhere else first"] if sure_no
+    bounced = ($rh_hist || []).tally.select { |m, n| n >= 2 }.keys
     hop = next_hop($game_map.map_id, targets)
+    hop = nil if hop && (bounced.include?(hop) || (($rh_hist || [])[-3] == hop && ($rh_hist || [])[-2] == $game_map.map_id))
     if hop
       path = tile_path(goal_tiles(hop))
       return [path, mapname(hop)] if !path.empty?
@@ -971,7 +1000,8 @@ module RH
       dist = static_dist(targets)
       exits = m_exits(md, f).reject { |e| (e[0] == $game_map.map_id && !targets.include?(e[0])) }
       recent = ($rh_hist || [])[0..-2]
-      # never ping-pong: places you were just in go last
+      # never ping-pong: places you were just in go last, places you keep bouncing between are dropped
+      exits = exits.reject { |e| bounced.include?(e[0]) && e[0] != $game_map.map_id }
       exits = exits.sort_by { |e| [recent.include?(e[0]) ? 1 : 0, dist[e[0]] || 99, e[0] == $rh_came_from ? 1 : 0] }
       exits.first(6).each do |e|
         path = tile_path(e[3])
@@ -980,11 +1010,29 @@ module RH
       end
     rescue
     end
-    return [[], "towards #{mapname(targets.first)}"]
+    return [[], "no way to #{mapname(targets.first)} from here yet - the story goes on somewhere else first"]
+  end
+
+  def self.twin_of?(id)
+    $rh_twin_try
+  end
+
+  def self.all_map_ids
+    @all_maps ||= begin
+      ($cache.mapinfos || load_data("Data/MapInfos.rxdata")).keys rescue warps.keys
+    end
   end
 
   # what the line should lead to right now: [cache key, story record or nil]
   def self.nav_want
+    fc = Graphics.frame_count
+    k = [$game_map.map_id, g && g[:nav]]
+    return $rh_want[2] if $rh_want && $rh_want[0] == k && fc - $rh_want[1] < 15
+    $rh_want = [k, fc, nav_want_now]
+    return $rh_want[2]
+  end
+
+  def self.nav_want_now
     d = g
     target = d[:nav]
     here = $game_map.map_id
@@ -1031,6 +1079,40 @@ module RH
       return f if f
     end
     $rh_nav_time = Graphics.frame_count
+    # the search runs a little each frame in the background, so the game never freezes
+    job = $rh_job
+    if !job || job[:key] != key || job[:map] != here
+      job = $rh_job = { :key => key, :map => here, :fiber => Fiber.new { nav_compute(key, r, here) } }
+    end
+    $rh_slice = Time.now
+    $rh_in_fiber = true
+    begin
+      res = job[:fiber].resume
+    rescue => e
+      $rh_job = nil
+      raise e
+    ensure
+      $rh_in_fiber = false
+    end
+    if job[:fiber].alive?
+      # still working it out: keep showing the old line (if it's for this place) meanwhile
+      if $rh_nav_cache && $rh_nav_cache[0][0] == here
+        c = $rh_nav_cache[1]
+        return follow(c[0], c[1]) || c
+      end
+      return [[], "finding the way..."]
+    end
+    $rh_job = nil
+    $rh_nav_cache = [key, res, pos]
+    return res
+  end
+
+  def self.nav_compute(key, r, here)
+    # another copy of this same place (the game swaps copies after story events): treat it as here
+    if r && r[:map] != here && mapname(r[:map]) == mapname(here) && (model(r[:map]) rescue nil) &&
+       model(r[:map])[:w] == $game_map.width && model(r[:map])[:h] == $game_map.height
+      r = r.merge(:map => here)
+    end
     if r
       if r[:map] == here && r[:id].to_i == 0 && r[:x].to_i == 0
         res = [[], "you're in the right area"]
@@ -1045,11 +1127,38 @@ module RH
       else
         res = route_to([r[:map]], spot_tiles(r))
       end
+      if res[0].empty? && res[1].to_s.start_with?("no way")
+        # this story step can't be reached yet: remember that, so the next real step gets picked
+        ($rh_unreach ||= {})[[r[:map], r[:x], r[:y], route_db[:sig]]] = true
+        $rh_live = nil
+        $rh_obj = nil
+        $rh_want = nil
+      end
     else
       res = route_to(key[1])
     end
-    $rh_nav_cache = [key, res, pos]
     return res
+  end
+
+  # inside the background search: hand control back to the game every ~12ms
+  def self.slice!
+    return if !$rh_in_fiber
+    return if Time.now - $rh_slice < 0.012
+    rl = @rh_relax
+    tb = $rh_tp_bike
+    $PokemonGlobal.bicycle = true if tb      # never leave you off your bike while the search pauses
+    $rh_in_fiber = false
+    Fiber.yield(:pending)
+    $rh_in_fiber = true
+    if tb
+      if ($PokemonGlobal.bicycle rescue false)
+        $PokemonGlobal.bicycle = false
+      else
+        $rh_tp_bike = false
+      end
+    end
+    $rh_slice = Time.now
+    @rh_relax = rl
   end
 end
 
@@ -1072,7 +1181,7 @@ end
 # which part of a map you land in and which exits you can actually walk to.
 #==============================================================================
 module RH
-  MAX_FLOODS = 400
+  MAX_FLOODS = 1500
 
   # cleared whenever the story moves on (switches change what is open)
   def self.route_db
@@ -1133,6 +1242,8 @@ module RH
   def self.model(id)
     db = route_db
     key = [id, @rh_relax]
+    return db[:models][key] if db[:models].key?(key)
+    slice!
     return db[:models][key] if db[:models].key?(key)
     db[:models][key] = nil
     m = ($cache.map_load(id) rescue nil)
@@ -1219,7 +1330,7 @@ module RH
           end
           # this is the page that will be live
           if op.trigger == 3 || op.trigger == 4
-            cmd = (op.list || []).find { |q| q.code == 201 && q.parameters[0] == 0 }
+            cmd = live_transfer(op.list, id, ev.id, kind == :var ? [tid, tval] : nil)
             if cmd && cmd.parameters[1] != id
               w = at ? [at[0], at[1], cmd.parameters[1], cmd.parameters[2], cmd.parameters[3]] :
                        [ev.x, ev.y, cmd.parameters[1], cmd.parameters[2], cmd.parameters[3], :auto]
@@ -1279,6 +1390,65 @@ module RH
       t
     end
     return $rh_transit[id] || [{}, {}]
+  end
+
+  # the first "move the player" command a scene really reaches right now
+  # (follows its if/else branches using the current switches and values; unknown checks count as "no")
+  def self.live_transfer(list, map_id, ev_id, override = nil)
+    skip = nil       # skipping commands deeper than this indent
+    taken = {}
+    (list || []).each do |q|
+      ind = q.indent
+      if skip
+        next if ind > skip
+        if ind == skip
+          if q.code == 411 && !taken[ind]      # the "if" part was skipped: run the else part
+            skip = nil
+          elsif q.code == 412
+            skip = nil
+          end
+          next
+        end
+        skip = nil
+      end
+      case q.code
+      when 111
+        taken[ind] = branch_true?(q.parameters, map_id, ev_id, override)
+        skip = ind if !taken[ind]
+      when 411
+        skip = ind if taken[ind]                # "if" part ran: skip the else part
+      when 201
+        return q if q.parameters[0] == 0
+      when 115
+        return nil
+      end
+    end
+    return nil
+  end
+
+  def self.branch_true?(pr, map_id, ev_id, override)
+    case pr[0]
+    when 0    # switch
+      ($game_switches[pr[1]] rescue false) == (pr[2] == 0)
+    when 1    # variable compare
+      v = (override && override[0] == pr[1]) ? override[1] : ($game_variables[pr[1]] rescue 0).to_i
+      o = pr[2] == 0 ? pr[3] : ($game_variables[pr[3]] rescue 0).to_i
+      case pr[4]
+      when 0 then v == o
+      when 1 then v >= o
+      when 2 then v <= o
+      when 3 then v > o
+      when 4 then v < o
+      when 5 then v != o
+      else false
+      end
+    when 2    # self switch
+      ($game_self_switches[[map_id, ev_id, pr[1]]] rescue false) == (pr[2] == 0)
+    else
+      false
+    end
+  rescue
+    false
   end
 
   # common events that move you (an event can call one)
@@ -1396,6 +1566,7 @@ module RH
         q << n
       end
       break if seen.size > 25000
+      slice! if (seen.size & 1023) == 0
     end
     f = { :tiles => seen, :id => md[:floods].length }
     md[:floods] << f
@@ -1427,6 +1598,7 @@ module RH
         prev[n] = c
         q << n
       end
+      slice! if (prev.size & 511) == 0
       break if prev.size > 20000
     end
     return [] if !hit
@@ -1461,12 +1633,15 @@ module RH
     w = md[:w]
     h = md[:h]
     connections(md[:id]).each do |to, ax, ay, bx, by|
+      om = ($cache.map_load(to) rescue nil)
+      next if !om
       groups = {}
       f[:tiles].each_key do |x, y|
         [[x == 0, -1, 0], [x == w - 1, 1, 0], [y == 0, 0, -1], [y == h - 1, 0, 1]].each do |edge, dx, dy|
           next if !edge
           ox = x + dx - ax + bx
           oy = y + dy - ay + by
+          next if ox < 0 || oy < 0 || ox >= om.width || oy >= om.height   # this edge doesn't join that map here
           (groups[[ox, oy]] ||= []) << [x, y]
         end
       end
@@ -1522,11 +1697,19 @@ module RH
 
   # static map-to-map distance (cheap guide for the search)
   def self.static_dist(targets)
+    db = route_db
+    db[:dist] ||= {}
+    return db[:dist][targets] if db[:dist][targets]
+    db[:dist][targets] = static_dist_now(targets)
+  end
+
+  def self.static_dist_now(targets)
     dist = {}
     targets.each { |t| dist[t] = 0 }
     rev = {}
     warps.each_key do |a|
       neighbors(a).each { |b| (rev[b] ||= []) << a }
+      slice!
     end
     q = targets.dup
     until q.empty?
@@ -1559,6 +1742,12 @@ module RH
     start = m_flood(md, $game_player.x, $game_player.y)
     key = [here, start[:id], targets, spot, relax]
     return db[:plans][key] if db[:plans].key?(key)
+    # a search that found nothing isn't repeated for a while (people walking around don't change the answer)
+    fk = [here, start[:id], targets, relax, db[:sig]]
+    $rh_fail ||= {}
+    $rh_quick ||= {}
+    return $rh_fail[fk][1] if $rh_fail[fk] && Graphics.frame_count - $rh_fail[fk][0] < 900
+    return nil if !$rh_in_fiber && $rh_quick[fk] && Graphics.frame_count - $rh_quick[fk] < 900   # quick check already ran out of time
     dist = static_dist(targets)
     st0 = [here, start[:id]]
     prev = { st0 => nil }
@@ -1568,7 +1757,9 @@ module RH
     found = nil
     t0 = Time.now
     until open.empty?
-      if Time.now - t0 > 2.0   # very far goals: give up this time, try again later
+      slice!
+      # in the background search there's time to look everywhere; quick checks elsewhere stay quick
+      if Time.now - t0 > ($rh_in_fiber ? 20.0 : 0.15)
         floods = MAX_FLOODS + 1
         break
       end
@@ -1623,7 +1814,9 @@ module RH
       end
       $rh_plan_chain = chain.chunk_while { |a, b| a == b }.map(&:first)
     end
-    db[:plans][key] = res
+    db[:plans][key] = res if !res.nil?
+    $rh_fail[fk] = [Graphics.frame_count, res] if res == false
+    $rh_quick[fk] = Graphics.frame_count if res.nil? && !$rh_in_fiber
     return res
   rescue => e
     $rh_plan_err = "#{e.class}: #{e.message} @ #{(e.backtrace || []).first.to_s[-60, 60]}"
@@ -1806,6 +1999,7 @@ module RH
   end
 
   def self.reachable_spot?(c)
+    return false if ($rh_unreach || {})[[c[:map], c[:x], c[:y], route_db[:sig]]]
     spot = [[c[:x], c[:y]], [c[:x], c[:y] + 1], [c[:x] - 1, c[:y]], [c[:x] + 1, c[:y]], [c[:x], c[:y] - 1],
             [c[:x], c[:y] + 2], [c[:x] - 2, c[:y]], [c[:x] + 2, c[:y]], [c[:x], c[:y] - 2]]
     here = $game_map.map_id
@@ -2931,13 +3125,17 @@ module RH
   end
 
   # every ~5 seconds: re-check the story step and whether the world changed (gates, switches, people)
+  def self.cond_vars
+    @cond_vars ||= RH_CONDVAR_DATA.split(",").map(&:to_i)
+  end
+
   def self.tick_refresh
     fc = (Graphics.frame_count rescue 0)
     return if $rh_tick && fc - $rh_tick < 300
     $rh_tick = fc
     sig = [($game_switches.instance_variable_get(:@data).hash rescue 0),
            ($game_self_switches.instance_variable_get(:@data).hash rescue 0),
-           ($game_variables.instance_variable_get(:@data).hash rescue 0)]
+           (RH.cond_vars.map { |v| $game_variables[v] rescue 0 }.hash)]   # only values that change which way events work
     if sig != $rh_world_sig
       $rh_world_sig = sig          # route planner rebuilds its picture of the world
       $rh_live = nil               # story step is worked out again
@@ -2993,7 +3191,7 @@ module RH
     $rh_obj_last = obj
     route = nil
     if nav
-      lbl = nav[1].to_s =~ /\A(towards|follow|you're|story|dark|surface)/ ? nav[1] : "to #{nav[1]}"
+      lbl = nav[1].to_s =~ /\A(towards|follow|you're|story|dark|surface|finding|no way)/ ? nav[1] : "to #{nav[1]}"
       route = nav[0].empty? ? "Route: #{nav[1]}" : "Route: #{lbl}  (#{nav[0].length - 1} steps)"
     end
     obj = nil if !d[:hud]
@@ -3525,3 +3723,6 @@ RH_VARMAP_DATA = "56,29;56,36;56,37;56,85;56,87;56,93;56,94;56,95;56,97;56,107;5
 
 # values / switches set on the way into each map (by the event that sends you there): map:vN=X sN ...
 RH_TRANSIT_DATA = "11:v108=1 v109=2 v111=5 v112=4 v113=3 v114=7 v115=6 s172;97:s285 v150=25;22:s178;26:v192=0 s525 v107=27 v107=25 v107=21 s789 v118=10 s183;17:v118=5;564:v635=2 v635=6;57:s51 v107=9 s59 s1719 s58 s60;508:s1024 s525 s579 s458 s884;855:v620=0 v621=1 v621=2 v621=3 v621=4 v621=0 v620=1 v620=4 v620=3 v620=2;21:v192=0 s2016 v107=25 s2021 s181;38:s31;887:s1810 s779 s1809 s1819 s1817 s1818 s1820 s1821 s1822 s1824 s1823 s1829 s1827 v664=5 v62=887 v664=4;34:s175;199:s174;29:s39 s421;519:s977 s39 s649 v552=0 v611=15;39:s32 s1987 s1953 v62=0 v747=4 v747=5 v769=99;764:v62=0 v440=6 v438=30 s979 v440=4 s1962 v747=4 v747=5 v769=99;899:s1987 s1993 s484 s1990 s1995 s1998 v742=1 v742=2 v742=3 v742=0 v742=4 v322=2 v322=0 s652 s2003 s2069 s1988 v552=0 s1370 s2018 s1612 s2011 s1996 s1991 s2002 s2006 v769=1001 v769=1020 v769=0 v766=2 v769=1000;689:v358=1 v62=0 v358=6 v358=0 v151=0 v151=1 s289 v151=2 s707 s2086 s1060 s2243;71:s410 v634=24 v634=30;64:v52=6;522:v323=0 v321=0 v322=1 v322=0 v322=-1 v322=4 v322=2 s655 s649 v322=3 s1984 v62=0 v747=4 v747=5 v769=99;328:v323=0 s2203 s434 s435 v749=0 v628=11 s1315 v628=12 s1334 s1691 v628=10;78:s1993 s1967 v62=0 v747=4 v747=5 v769=99;181:s1058 s152 v104=9 v192=2 v192=0 v104=23 v104=22;41:v104=24 v104=27;175:v97=0 v98=0 v99=0 v100=0 v101=0 v102=0 v103=0 v320=0 v319=7 v92=14;91:v638=1 v61=0;623:s779;89:v639=1 v640=1 v639=0 v640=0 v639=2 v640=2;90:v61=5;92:v61=5;81:v61=5 v638=0 v118=18;95:v56=9;292:v150=26 s423 v159=3;526:s285 s649 v322=0;103:v157=4;635:v157=4;106:v62=0 v770=100000 s2090;36:s457 v56=18 s63 s785 s208 v56=17 v644=90 v644=95 v644=100;113:v68=1;129:v74=0;125:v192=0 s525 s586 s592 v77=1 s64;128:v75=7;118:v75=7;423:v107=4;150:v107=6 v77=9 s2160 v77=5 s1804 s1785 s1802 v660=22;130:s2095;382:v185=0 s649;153:s1804 s1784 v77=4 s1785 s1652 s1789 s1788;149:s457 s525 v192=0 s1000 s1802 v655=11 s98 s91;889:s1804 v661=7 v662=10 v660=19 v663=13 s1106 s1971 v62=0 v747=4 v747=5 v769=99;886:s1804 v661=9 v662=6 s1806 v661=7 v662=5 v662=10 v661=12 v662=14 v661=10 v662=9 v661=30 v662=26 v661=24 v662=21 v661=18 v662=24 v661=20 v662=31;133:v107=7;162:s101 s102 s106 s105;184:s541;172:v93=0;163:s484 s1966 v62=0 v747=4 v747=5 v769=99;168:v79=0 v79=1 v160=13 v349=5 s2203;324:s437 s426 v159=9 s2034 s436;176:s151 v106=2;80:v104=1 v92=17 s154 v192=2 v192=0 v104=23;79:s130 v92=10;304:v552=10 v552=11 v552=12 v552=13 v552=14 s2211 v150=23;896:s1891 s1893 s1892;190:s1042;193:s1990 s1960 v62=0 v747=4 v747=5 v769=99;197:v107=1 v107=2 v161=0;146:v161=0;560:v161=0;196:s157 v192=0 s525 s139;202:s176;15:s260 v192=1 v118=3 v118=4 v118=1;367:s260 v192=1 v118=3 v118=4 v118=1;214:s193;215:s196;227:s785;225:v192=0 s525 v123=8;761:s968 s2106;622:v339=7 s777;228:s282;232:v748=12 s2032 s1963 v62=0 v747=4 v747=5 v769=99;231:v149=21;233:v748=14 v149=2 s2032 v192=1 v149=4 s256 s257 s1995 s1968 v62=0 v747=4 v747=5 v769=99;271:v145=8 v123=19 v192=0 s525 s569 s207 v123=20;251:s248 v146=0;234:v145=8 v146=0 s248;246:s272;265:s457;244:s290 v149=14;252:s248 v146=0;614:v341=3 v341=2 v341=1;617:v341=3 v341=2 v341=1 s740 s741 s742;247:v149=13;262:v149=12;263:v149=11;245:v149=16;235:v145=8;239:v123=21 s1975 v62=0 v747=4 v747=5 v769=99;282:s292 s361 s362 s363 s364 s365;272:v150=25;283:s356 s357 s358 s359 s360 s292;284:s366 s292;289:s292 s393 s326 s334 s335;288:s292 s336 s337 s338 v622=16;434:v185=0 v473=0 v474=0;293:v159=2 s1998 s1972 v62=0 v747=4 v747=5 v769=99;831:v562=12;295:v150=24;354:s461;355:s461;763:s461 s649 v618=29 s2074 v552=0;312:s789 s250 v150=22 v150=23;318:s456 v154=0;527:v670=4 s1314 v670=2 v616=2 v192=0 s1316 v586=16 v586=14 v631=11 s1335 s1336 v637=32 s1803 v660=34 v161=0 v660=35 s1337 s1338 s1325 s1309 s1313 v660=33 s1939 s1308 s2008 v62=0 v747=4 v747=5 v769=99;316:v154=0;317:v154=0;315:v154=0;327:s2203;326:s2203;325:s2203;352:s2203;637:s2203 s795 s796;478:v160=13 v349=5;291:v159=18;62:v323=2 v160=13 v349=5;329:s528;332:s2100 s784 v628=11 s1315 v628=12 s1334 s1691 v628=10 s2089;331:s427;347:v159=19;342:v159=19;356:s2324 s2043 v173=12 v173=11 v276=38 v332=1 s479 s733 s2051 v750=0;357:v192=0 s525 s460 v173=13 v173=11 s581 v276=39 v276=37;446:v193=32;390:v185=0 s649;360:s410;362:v276=32 s2042;380:s649 v185=0;466:s649 v185=1 v185=2;589:s649 v185=1 v185=2;358:s410;364:v185=0 s649 s457 s290 s483 v193=1 s2050;359:v184=4 s649 v276=29 v185=0 s580;375:s649;366:s649;365:v74=0 v74=1;373:s649 v185=0 v185=1;381:v185=0;374:s649 s521 v185=0;376:s649 v622=16;377:s649;378:s649 v185=2;379:s649;386:s649;383:s649;385:s649;430:s649;384:s649;396:s649;387:v473=0 v474=0 s649;835:v586=3;404:s410;417:s503 v214=9 v214=1;419:s1032;413:s1047 v475=2 v560=0 s1087 v214=10 v469=0 s921 v391=49 s410;414:s1831 v611=3 v611=2 v611=5 s1053 v475=26 s1830 v611=4 v475=23 s2135 v611=6 s1974 v62=0 v747=4 v747=5 v769=99;632:s1831 v611=3 v611=2 v611=5 s782 s525 v192=4 s457 s1000 v192=-1 v339=39 s2069 v611=4 s1982 v62=0 v747=4 v747=5 v769=99;426:v82=0 v326=0;441:v185=0;440:v185=0;442:v185=0;439:v192=0 s525 v193=30 v193=19;450:v193=39 s1973 v62=0 v747=4 v747=5 v769=99;452:s261;453:v193=41;456:v193=43;454:s290;457:v74=0 v74=1;460:v74=0 v74=1;467:v256=2 v257=2 v258=2 v259=2 v260=2 v261=2 v262=2 v263=2 v264=2 s575 v276=1 s649 v276=27;473:s549 s550 s551 s552 s553 s554 s555 s556 s557 s585 s584 s576 v276=22 v258=1 v258=0;503:v262=3 v262=2 v235=0 v275=1 v237=15 v238=11 v239=15 v240=12 v241=0 v242=0 v243=0 v244=0 v245=0 v246=0 v273=0 v274=0 v236=2 v275=2 v238=16 v240=17 v275=3 v237=17 v238=14 v239=12 v240=14 v275=4 v237=7 v238=6 v239=7 v240=7 v241=12 v242=7 v236=3;492:v262=3 v262=2 v235=0 v275=1 v237=15 v238=11 v239=15 v240=12 v241=0 v242=0 v243=0 v244=0 v245=0 v246=0 v273=0 v274=0 v236=2 v275=2 v238=16 v240=17 v275=3 v237=17 v238=14 v239=12 v240=14 v275=4 v237=7 v238=6 v239=7 v240=7 v241=12 v242=7 v236=3;498:v257=3 v257=2 v235=0 v275=1 v237=21 v238=9 v239=21 v240=14 v241=25 v242=9 v243=25 v244=14 v245=26 v246=9 v273=26 v274=14 v236=6 v275=2 v237=19 v238=16 v239=19 v240=17 v241=14 v242=16 v243=14 v244=18 v236=4 v275=3 v238=21 v239=23 v240=26 v241=23 v242=21 v243=26 v244=26 v275=4 v237=14 v238=31 v240=31 v241=37 v242=32 v236=3;482:v257=3 v257=2 v235=0 v275=1 v237=21 v238=9 v239=21 v240=14 v241=25 v242=9 v243=25 v244=14 v245=26 v246=9 v273=26 v274=14 v236=6 v275=2 v237=19 v238=16 v239=19 v240=17 v241=14 v242=16 v243=14 v244=18 v236=4 v275=3 v238=21 v239=23 v240=26 v241=23 v242=21 v243=26 v244=26 v275=4 v237=14 v238=31 v240=31 v241=37 v242=32 v236=3;497:v256=3 v256=2 v235=0 v275=1 v237=9 v238=10 v239=14 v240=10 v241=17 v242=10 v243=22 v244=10 v245=22 v246=11 v273=14 v274=11 v236=6;480:v256=3 v256=2 v235=0 v275=1 v237=9 v238=10 v239=14 v240=10 v241=17 v242=10 v243=22 v244=10 v245=22 v246=11 v273=14 v274=11 v236=6;499:v260=3 v260=2 v235=0 v275=1 v237=11 v238=23 v239=11 v240=19 v241=10 v242=19 v243=11 v244=18 v245=15 v246=19 v273=19 v274=17 v236=6;484:v260=3 v260=2 v235=0 v275=1 v237=11 v238=23 v239=11 v240=19 v241=10 v242=19 v243=11 v244=18 v245=15 v246=19 v273=19 v274=17 v236=6;500:v261=3 v261=2 v235=0 v275=1 v237=7 v238=13 v239=14 v240=10 v241=14 v242=14 v243=14 v244=15 v245=13 v246=15 v273=13 v274=19 v236=6;486:v261=3 v261=2 v235=0 v275=1 v237=7 v238=13 v239=14 v240=10 v241=14 v242=14 v243=14 v244=15 v245=13 v246=15 v273=13 v274=19 v236=6;501:v258=3 v258=2;488:v258=3 v258=2;502:v259=3 v259=2 s1363;490:v259=3 v259=2 s1363;504:v263=3 v263=2;494:v263=3 v263=2;505:v264=3 v264=2 v235=0 v275=1 v237=6 v238=14 v239=10 v240=14 v241=11 v242=11 v243=14 v244=11 v245=14 v246=12 v273=0 v274=0 v236=5 v275=2 v237=13 v238=23 v239=16 v240=18 v241=15 v242=21 v243=15 v244=18 v245=16 v246=21 v192=2 s577 v192=0 v276=26;496:v264=3 v264=2 v235=0 v275=1 v237=6 v238=14 v239=10 v240=14 v241=11 v242=11 v243=14 v244=11 v245=14 v246=12 v273=0 v274=0 v236=5 v275=2 v237=13 v238=23 v239=16 v240=18 v241=15 v242=21 v243=15 v244=18 v245=16 v246=21;474:s1363 v259=1 v259=0;489:s1363 v259=1 v259=0;479:v256=1 v256=0;470:v256=1 v256=0;481:v257=1 v257=0;469:v257=1 v257=0;543:v697=15;483:v260=1 v260=0;471:v260=1 v260=0;485:v261=1 v261=0;472:v261=1 v261=0;487:v258=1 v258=0;491:v262=1 v262=0;468:v262=1 v262=0;493:v263=1 v263=0;475:v263=1 v263=0;495:v264=1 v264=0;476:v264=1 v264=0 s557 v276=22;506:v316=0 v123=17;180:v161=0 s1000 v192=0 v552=8 s1304;528:s649;585:s649;513:s649;538:s649;65:s726;591:v321=0 v322=1 v322=0 v322=-1 v322=4 v322=2 s655 v322=3 s806 s828 s829 s1597 s1596 v619=25;541:v321=0 v322=1 v322=0 v322=-1 v322=4 v322=2 s655 v322=3;590:v321=0 v322=1 v322=0 v322=-1 v322=4 v322=2 s655 v322=3 s652 s1969 v62=0 v747=4 v747=5 v769=99;598:v321=0 v322=1 v322=0 v322=-1 v322=4 v322=2 s655 v322=3 s1986 v62=0 v747=4 v747=5 v769=99;597:v321=0 v322=1 v322=0 v322=-1 v322=4 v322=2 s655 v322=3;599:v321=0 v322=1 v322=0 v322=-1 v322=4 v322=2 s655 v322=3;557:v321=0 v322=1 v322=0 v322=-1 v322=4 v322=2 s655 v322=3;530:s649 v697=16 v697=14 v322=0 s1320 s1318 s1307 v619=26 v192=1 s1303 s1000 s1351 v571=0 v192=0 s2018 s2158 v675=1 v675=0 v747=1 v747=0 s1305;536:s649;628:s779 v339=28 s780 v339=37 v461=0 v458=0 v460=0 v454=0 v468=0 v452=0 v463=0 v451=0 v467=0 v456=0 v465=0 v453=0 v462=0 v455=0 v466=0 v457=0 v464=0 v459=0;567:s649;535:v49=535 s1068;569:s649;586:s649;604:s649;520:v322=0;238:v161=0;545:v161=0 v325=0;548:v326=0 s1980 v62=0 v747=4 v747=5 v769=99;563:v742=1 v742=2 v742=3 v742=0 v742=4 s1981 v62=0 v747=4 v747=5 v769=99;603:s649;562:s649;580:v161=0 v192=-1 s1582 v772=0 s1586 s2248 s1355 s2249 s1370 v813=0;601:s996;119:v322=0;694:v322=0 v322=-1 s829 v359=0;703:v322=0 v322=-1 s829 v359=0;704:v322=0 v322=-1 s829 v359=0;705:v322=0 v322=-1 s829 v359=0;858:s1574 s1605 v619=3 v619=14 v619=9 v619=15 s1678 v619=13 v619=16;594:v637=7 s1578 s1606 s1589 v637=8 s1958 v62=0 v747=4 v747=5 v769=99;877:s1997 v637=31;524:v322=0;523:v322=0;544:v322=0;600:s2003 s1979 v62=0 v747=4 v747=5 v769=99;84:v339=10;626:v339=17 v339=18 v339=19 v339=20 v339=21 v339=22 v339=23 v339=24;660:v382=0;651:s900 s867;662:s897;692:v62=4 v62=3 v62=2 v62=1 v371=6;693:v371=6 s1988 s1954 v62=0 v747=4 v747=5 v769=99;663:v370=1;666:s875 s876 v362=12 s2107;37:s1060 s2243;679:s910 v49=679 s649 s2103;678:s907;683:s910;682:s910;680:s910;696:s824 v380=4 v380=3 v361=8 v361=6 v361=4 v361=2;638:s866;664:s869;668:s868 v647=10 v647=9;686:s908;697:s874;699:s879 v381=3 v381=8;707:s1601 s1608 s1317 s1326 s1324 v645=5 v648=7 v647=10 v647=9;836:v787=1 v787=3 v787=2;727:s410;719:s410;718:s649;726:s649;742:s649;733:s956 v391=21 v408=0 v432=3 v432=2 v432=1 v434=2;734:v391=46;713:s649;715:s962 s963 v391=5 v391=45 s649 s410;736:v434=3;735:s410 s975 v391=47;732:v391=21 v408=0 s410 s964 s965;730:s921;754:v192=1 v192=0 s420;741:v391=55;757:v391=26;759:s974;769:v477=1 v477=2 v477=3 v477=0 v192=0 v475=61 v475=62 v475=63;770:v477=1 v477=2 v477=3 v477=0 v192=3 v475=85 v475=86 v161=0 v475=87 v192=2;771:v477=1 v477=0 v192=3 v161=0 v475=91 v475=92 v475=93 v192=2;775:v475=29;774:s2135;853:s2135 s290 s1080 v615=42 v615=43 v615=58;406:s2135;776:s1062;779:s1075 v478=0;781:v484=0 v485=0 v486=0 v487=0 v488=0 v489=0 v490=0 v491=0 v492=0 v493=0 v495=0 v494=0 v496=0 v498=0 v497=0 v499=0 v500=0 v501=0 v502=0 v503=0 v504=0 v505=0 v506=0 v507=0 v508=0 v509=0 v510=0 v511=0 v512=0 v513=0 v514=0 v515=0 v516=0 v517=0 v518=0 v519=0 v520=0 v521=0 v522=0 v523=0 s2157;778:s1075 v478=0 s2126;783:v513=1 v514=2 v515=3 v516=4 v517=1 v518=1 v519=2 v519=3 v519=4 v517=2 v518=2 v519=1 v517=3 v518=3 v517=4 v518=4 v513=0 v514=0 v515=0 v516=0 v517=0 v518=0 v519=0 s1229 v613=2;784:v485=0 v484=2 v487=1 v487=0 s1144 v484=3 v487=2 s1105 s1109 v485=2 v492=0 v493=0 v494=0 v495=0;812:v485=0 v484=2 v487=1 v487=0 s1144 v484=3 v487=2 s1105 s1109 v485=2 v492=0 v493=0 v494=0 v495=0;786:v486=0 v487=0 v488=0 v489=0 v490=0 s1110 v486=2 v475=113 v499=0 s1106 v492=2 v492=1 v492=0 s1128 s1129 s1130;811:v486=0 v487=0 v488=0 v489=0 v490=0 s1110 v486=2 v475=113 v499=0 s1106 v492=2 v492=1 v492=0 s1128 s1129 s1130;785:v613=5;788:s1143 s1144;790:v503=0 v502=0 v501=0 v504=0 s1157 s1166 v475=129 s1160 v503=2;813:s1227;787:s1106 v475=124 v475=125;796:v475=141 v475=140 v505=3;806:v520=9 v520=-1;810:v520=9;802:v520=-1;794:v475=138;844:v552=999 v618=5;817:v552=0 v553=0 v618=10 s1977 v62=0 v747=4 v747=5 v769=99;820:v618=13;814:s1594 v611=10 v192=1 v192=0 v552=2 v611=11;821:v618=17 s1394 v192=-1 s1395 v28=0 v161=0 v601=0 v608=0 v552=10;845:v618=19;461:v552=0 v611=15;822:v552=20;306:v192=1 s1303 s1000 s1351 v571=0 v192=0 s2018 s2158 v675=1 v675=0 v747=1 v747=0 s1305;825:v744=1 v577=0 v578=1 v579=2 v744=2 v578=2 v580=2 v581=2 v744=3 v582=0 v583=0 v584=0 v585=0;826:s1325 v739=2 s1370 s290 s1000 s1080 s1511 s1512 s1513 s1508 s1509 s1510 v562=14 v562=12 v586=14 v586=16 v586=12 s1331 v636=20 s1329 s1333 s1312 v613=12 v649=13 s1322 s1323 s1308 s1307 s1321 v649=14 s1330 v626=32 v192=0 s2052 s1340 s1339 v664=13 s1334 v664=11 v747=2 v769=0 v769=1001 v769=1020;827:s1370 s1320 v697=18 v31=0 v33=0 v29=-1 v602=-1 s1345 s1395 v29=0 s1348 v558=0 s1347 v601=0 v602=0 v603=0 s1400 s1397 s1399 s789 v161=0 v62=250 s1587 v192=-1 s1582 s1396 s2204 v28=0 s1398 v726=2 s1965 v62=0 v747=4 v747=5 v769=99;893:s1320 v697=18 v697=25 v192=1 v192=0 v697=26;828:v31=0 v33=0 s1370 v29=-1 v602=-1 s1345 s1395 v29=0 s1348 v558=0 s1347 v601=0 v602=0 v603=0 s1400 s1397 s1399;829:v772=0 s2326 s1355 s1586 s1583 s1370 v775=0 v161=0 v192=-1 s1582 v726=2;842:v772=0 s1586 s1584 s1585 s1355 s1392 s1370 v777=0 v161=0;832:s1996 s1970 s2007 v62=0 v747=4 v747=5 v769=99;840:s410 s1991 s1961 v62=0 v747=4 v747=5 v769=99;850:s1652 s1653 v649=5 v649=6 v649=9 v649=13 s1322 s1323 s1308 s1307 s1321 v649=14 s649 s1765;849:v613=10 s410;883:s649;851:s1653;854:v615=16 v615=28 v615=20 v615=25 v615=33 v615=10 v615=13 v615=14 v615=30 v615=31 v615=27 v615=41 s290 s1080 v615=42 v615=43 v615=52 v615=56;857:v622=13 s1581 s1308 s1616;860:v626=31 s649;862:v632=7;868:s1582;867:s2002 v627=5 s1679 v192=1 v192=0 v627=7 v627=9 v627=11 s1367 s1680 v627=13 s290 s1080 v161=0 v627=16 s1338 s1307 s1316 s1964 v62=0 v747=4 v747=5 v769=99;870:v631=4 s1693 s1692 v631=6;871:v628=2 v628=8;872:v631=5 s1693;878:v49=878 s1776 s1772 s1775;879:v161=0 v49=879 s1772 s1780;881:v647=2 v647=4;132:s457 s525 v192=0 s1000 v77=3 v652=9 s85;885:s1652;888:s1809 s1857 v192=0 s1000 s2052 s1340 s1339 v664=13 s1334 v664=11;890:v676=-2 v677=-2 v678=-2 v679=-2 v680=-2 v681=0 v682=0 v683=0 v684=0 v685=0 v686=2 v687=2 v688=2 v689=2 v690=2 v651=5 v651=7;891:v676=-2 v677=-2 v678=-2 v679=-2 v680=-2 v681=0 v682=0 v683=0 v684=0 v685=0 v686=2 v687=2 v688=2 v689=2 v690=2 v651=5 v651=7;222:v651=15 s1080 s2092 v675=1 v675=0;894:v161=0 v697=2 v697=9 v62=0 v675=1 v697=12 v675=0;339:v697=13 s1877;895:s2006 s1983 v62=0 v747=4 v747=5 v769=99;532:s1955 v62=0 v747=4 v747=5 v769=99;874:s1956 v62=0 v747=4 v747=5 v769=99;164:s1957 v62=0 v747=4 v747=5 v769=99;127:s1959 v62=0 v747=4 v747=5 v769=99;876:s1985 v62=0 v747=4 v747=5 v769=99;588:s1978 v62=0 v747=4 v747=5 v769=99;517:s1978 v62=0 v747=4 v747=5 v769=99;900:v766=2 v769=1000 s2093 v751=2 v760=2 v763=2 v758=2 v753=2 v762=2 v756=2 v759=2 v752=2 v757=2 v754=2 v755=2 v761=2;902:v48=13 v49=902 v773=4 v773=5"
+
+# variables that decide which page an event is on
+RH_CONDVAR_DATA = "11,12,26,29,31,33,43,50,52,54,56,59,62,65,66,73,74,75,77,78,79,80,82,91,92,94,95,96,97,98,99,100,101,102,103,104,105,107,108,109,110,111,112,113,114,115,118,119,120,121,123,124,125,126,127,128,129,131,132,134,135,136,137,138,139,140,144,145,146,147,148,149,150,152,154,155,156,157,159,160,162,163,164,165,166,167,168,169,170,171,172,173,176,181,182,183,184,185,186,187,188,189,190,193,194,195,196,197,198,199,200,201,202,203,204,205,206,207,208,209,210,212,213,214,215,222,223,224,225,226,231,256,257,258,259,260,261,262,263,264,276,278,319,321,322,323,325,326,329,332,337,338,339,341,342,343,349,350,351,352,353,354,355,356,357,358,359,360,362,363,364,365,366,367,368,369,370,371,372,373,374,375,376,377,380,381,382,383,391,393,396,397,398,399,400,401,402,403,408,409,410,411,412,413,414,415,416,417,418,419,420,421,422,423,424,425,426,427,428,429,430,431,432,433,435,436,438,440,449,450,451,452,453,454,455,456,457,458,459,460,461,462,463,464,465,466,467,468,470,471,472,475,476,477,478,480,505,513,514,515,516,517,518,519,520,521,522,523,546,547,549,550,551,552,553,554,555,556,557,558,561,562,568,569,570,572,576,577,578,579,580,581,582,583,584,585,586,588,589,596,597,598,599,611,612,613,615,616,617,618,619,620,621,622,623,626,627,628,631,632,633,634,635,636,637,638,639,640,641,642,643,644,645,646,647,648,649,650,651,652,653,654,655,656,657,658,659,660,663,664,665,670,676,677,678,679,680,681,682,683,684,685,686,687,688,689,690,692,694,695,696,697,699,721,722,725,726,739,740,741,742,743,744,748,749,750,751,752,753,754,755,756,757,758,759,760,761,762,763,766,769,773,778,781,795,796"
