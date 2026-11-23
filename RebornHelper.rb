@@ -1,4 +1,4 @@
-RH_VERSION = 20   # bumped with every release (used by the auto-updater)
+RH_VERSION = 21   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -490,6 +490,12 @@ module RH
   def self.ev_cache
     $rh_evpos = {}
     $rh_clearpos = {}
+    $rh_jumppos = {}
+    ($game_map.events || {}).each_value do |ev|
+      next if ev.through
+      js = (jump_spec(ev.list) rescue nil)
+      $rh_jumppos[[ev.x, ev.y]] = js if js
+    end
     ($game_map.events || {}).each_value do |ev|
       next if ev.through || ev.character_name.to_s == ""
       if clearable?(ev.list)
@@ -645,6 +651,13 @@ module RH
     nx = x + dx
     ny = y + dy
     return nil if nx < 0 || ny < 0 || nx >= mw || ny >= mh
+    if $rh_jumppos && (js = $rh_jumppos[[nx, ny]]) && (jd = js[d] || js[:any])   # jump pad / gap
+      lx = x + jd[0]
+      ly = y + jd[1]
+      return nil if lx < 0 || ly < 0 || lx >= mw || ly >= mh || blocked_by_event?(lx, ly)
+      return [lx, ly] if ($game_map.passable?(lx, ly, 10 - d) rescue false) || ($game_map.passable?(lx, ly, d) rescue false)
+      return nil
+    end
     if ($game_player.passable?(x, y, d) rescue false) || (clear_at?(nx, ny) && ($game_map.passable?(nx, ny, 10 - d) rescue false))
       if ice?(nx, ny)   # slide until something stops you
         cx, cy = nx, ny
@@ -984,6 +997,20 @@ module RH
         return res if res && !res[0].empty? && res[1] !~ /\Atowards /
       end
     end
+    # double-check once with everything rebuilt fresh before ever saying "no way"
+    if sure_no && !$rh_retry
+      $rh_retry = true
+      begin
+        $rh_route_db = nil
+        $rh_fail = {}
+        $rh_quick = {}
+        $rh_evpos = nil
+        again = route_to(targets, spot)
+      ensure
+        $rh_retry = false
+      end
+      return again
+    end
     # the full search looked everywhere: don't send you wandering, say so (and the goal gets re-picked)
     return [[], "no way to #{mapname(targets.first)} from here yet - the story goes on somewhere else first"] if sure_no
     bounced = ($rh_hist || []).tally.select { |m, n| n >= 2 }.keys
@@ -1109,8 +1136,13 @@ module RH
 
   def self.nav_compute(key, r, here)
     # another copy of this same place (the game swaps copies after story events): treat it as here
-    if r && r[:map] != here && mapname(r[:map]) == mapname(here) && (model(r[:map]) rescue nil) &&
-       model(r[:map])[:w] == $game_map.width && model(r[:map])[:h] == $game_map.height
+    twin = r && r[:map] != here && mapname(r[:map]) == mapname(here) && (model(r[:map]) rescue nil) &&
+           model(r[:map])[:w] == $game_map.width && model(r[:map])[:h] == $game_map.height
+    if twin
+      # the game swaps copies of this place (e.g. water drained / filled): go to the real copy if you can,
+      # otherwise the same spot here
+      res = route_to([r[:map]], spot_tiles(r))
+      return res if !res[0].empty? || !res[1].to_s.start_with?("no way")
       r = r.merge(:map => here)
     end
     if r
@@ -1145,6 +1177,8 @@ module RH
     return if !$rh_in_fiber
     return if Time.now - $rh_slice < 0.012
     rl = @rh_relax
+    ro = @rh_ov
+    @rh_ov = nil
     tb = $rh_tp_bike
     $PokemonGlobal.bicycle = true if tb      # never leave you off your bike while the search pauses
     $rh_in_fiber = false
@@ -1159,6 +1193,7 @@ module RH
     end
     $rh_slice = Time.now
     @rh_relax = rl
+    @rh_ov = ro
   end
 end
 
@@ -1192,12 +1227,45 @@ module RH
     return $rh_route_db
   end
 
+  # values the search is pretending are set (after flipping a switch / pressing a machine on the way)
+  def self.gv(i)
+    return @rh_ov[[:v, i]] if @rh_ov && @rh_ov.key?([:v, i])
+    ($game_variables[i] rescue 0).to_i
+  end
+
+  def self.gs(i)
+    return @rh_ov[[:s, i]] if @rh_ov && @rh_ov.key?([:s, i])
+    ($game_switches[i] rescue false) ? true : false
+  end
+
+  # which values / switches the events of one map look at (so pictures are only redone when they matter)
+  def self.map_refs(id)
+    $rh_refs ||= {}
+    return $rh_refs[id] if $rh_refs[id]
+    refs = {}
+    m = ($cache.map_load(id) rescue nil)
+    (m ? m.events : {}).each_value do |ev|
+      ev.pages.each do |pg|
+        c = pg.condition
+        refs[[:s, c.switch1_id]] = true if c.switch1_valid
+        refs[[:s, c.switch2_id]] = true if c.switch2_valid
+        refs[[:v, c.variable_id]] = true if c.variable_valid
+        (pg.list || []).each do |q|
+          next if q.code != 111
+          refs[[:s, q.parameters[1]]] = true if q.parameters[0] == 0
+          refs[[:v, q.parameters[1]]] = true if q.parameters[0] == 1
+        end
+      end
+    end
+    $rh_refs[id] = refs
+  end
+
   def self.active_page(map_id, ev)
     ev.pages.reverse_each do |pg|
       c = pg.condition
-      next if c.switch1_valid && !($game_switches[c.switch1_id] rescue false)
-      next if c.switch2_valid && !($game_switches[c.switch2_id] rescue false)
-      next if c.variable_valid && ($game_variables[c.variable_id] rescue 0).to_i < c.variable_value
+      next if c.switch1_valid && !gs(c.switch1_id)
+      next if c.switch2_valid && !gs(c.switch2_id)
+      next if c.variable_valid && gv(c.variable_id) < c.variable_value
       next if c.self_switch_valid && !($game_self_switches[[map_id, ev.id, c.self_switch_ch]] rescue false)
       return pg
     end
@@ -1218,7 +1286,33 @@ module RH
   end
 
   # blockers on one event spot -> :tile id, :boulder, :block or nil
+  # spots that make you jump when you walk into them: { direction you face => [dx, dy] }
+  def self.jump_spec(list)
+    return nil if !list
+    $rh_jspec ||= {}.compare_by_identity
+    return $rh_jspec[list] if $rh_jspec.key?(list)
+    spec = {}
+    facing = {}
+    list.each do |q|
+      if q.code == 111 && q.parameters[0] == 6 && q.parameters[1] == -1
+        facing[q.indent] = q.parameters[2]
+      elsif q.code == 209 && q.parameters[0] == -1
+        dir = nil
+        facing.each { |ind, dd| dir = dd if ind < q.indent }
+        (q.parameters[1].list rescue []).each do |mc|
+          next if mc.code != 14
+          spec[dir || :any] = [mc.parameters[0], mc.parameters[1]]
+        end
+      end
+    end
+    $rh_jspec[list] = spec.empty? ? nil : spec
+  end
+
   def self.sort_blocker(md, x, y, through, tile_id, charname, list, name = "", moves = true)
+    if (js = jump_spec(list)) && !through
+      md[:jumps][[x, y]] = js      # not a wall: bumping into it jumps you over
+      return
+    end
     if climb_wall?(name, list)
       md[:block][[x, y]] = true
       return
@@ -1241,7 +1335,13 @@ module RH
   # For the map you are on, blockers come from the LIVE events (moved boulders, NPCs that walked away).
   def self.model(id)
     db = route_db
-    key = [id, @rh_relax]
+    ovk = nil
+    if @rh_ov && !@rh_ov.empty?
+      refs = map_refs(id)
+      ovk = @rh_ov.select { |k, _| refs[k] }.sort_by { |k, _| k.to_s }
+      ovk = nil if ovk.empty?
+    end
+    key = [id, @rh_relax, ovk]
     return db[:models][key] if db[:models].key?(key)
     slice!
     return db[:models][key] if db[:models].key?(key)
@@ -1251,7 +1351,7 @@ module RH
     ts = ($cache.RXtilesets[m.tileset_id] rescue nil)
     return nil if !ts
     md = { :id => id, :w => m.width, :h => m.height, :data => m.data, :pas => ts.passages, :pri => ts.priorities,
-           :tt => ts.terrain_tags, :evtile => {}, :block => {}, :boulder => {}, :warps => [], :floods => [] }
+           :tt => ts.terrain_tags, :evtile => {}, :block => {}, :boulder => {}, :warps => [], :floods => [], :jumps => {} }
     live = (id == ($game_map.map_id rescue nil)) && ($game_map.events rescue nil)
     # variables you can change yourself on this map (elevator panels, levers...): var => [values]
     settable = {}
@@ -1271,8 +1371,8 @@ module RH
         c = op.condition
         next if !c.variable_valid || !settable[c.variable_id]
         next if !settable[c.variable_id].any? { |v| v >= c.variable_value }
-        next if c.switch1_valid && !($game_switches[c.switch1_id] rescue false)
-        next if c.switch2_valid && !($game_switches[c.switch2_id] rescue false)
+        next if c.switch1_valid && !gs(c.switch1_id)
+        next if c.switch2_valid && !gs(c.switch2_id)
         next if c.self_switch_valid && !($game_self_switches[[id, ev.id, c.self_switch_ch]] rescue false)
         next if op.trigger == 3 || op.trigger == 4
         (op.list || []).each do |cmd|
@@ -1320,12 +1420,12 @@ module RH
       tries.uniq.first(40).each do |kind, tid, tval, at|
         ev.pages.reverse_each do |op|
           c = op.condition
-          s1 = c.switch1_valid && !(kind == :sw && tid == c.switch1_id) && !($game_switches[c.switch1_id] rescue false)
-          s2 = c.switch2_valid && !(kind == :sw && tid == c.switch2_id) && !($game_switches[c.switch2_id] rescue false)
+          s1 = c.switch1_valid && !(kind == :sw && tid == c.switch1_id) && !gs(c.switch1_id)
+          s2 = c.switch2_valid && !(kind == :sw && tid == c.switch2_id) && !gs(c.switch2_id)
           next if s1 || s2
           next if c.self_switch_valid && !($game_self_switches[[id, ev.id, c.self_switch_ch]] rescue false)
           if c.variable_valid
-            cur = (kind == :var && c.variable_id == tid) ? tval : ($game_variables[c.variable_id] rescue 0).to_i
+            cur = (kind == :var && c.variable_id == tid) ? tval : gv(c.variable_id)
             next if cur < c.variable_value
           end
           # this is the page that will be live
@@ -1350,10 +1450,13 @@ module RH
       end
       next if pg.trigger == 3 || pg.trigger == 4
       # every destination this event can send you to (trains / boats / menus have several)
+      tr, eff = live_effects(pg.list, id, ev.id)
+      eff = nil if eff.empty?
+      tr.each do |cmd|
+        md[:warps] << [ev.x, ev.y, cmd.parameters[1], cmd.parameters[2], cmd.parameters[3], nil, eff]
+      end
       (pg.list || []).each do |cmd|
-        if cmd.code == 201 && cmd.parameters[0] == 0
-          md[:warps] << [ev.x, ev.y, cmd.parameters[1], cmd.parameters[2], cmd.parameters[3]]
-        elsif cmd.code == 117
+        if cmd.code == 117
           common_warps(cmd.parameters[0]).each { |to, x2, y2| md[:warps] << [ev.x, ev.y, to, x2, y2] }
         end
       end
@@ -1426,13 +1529,68 @@ module RH
     return nil
   end
 
-  def self.branch_true?(pr, map_id, ev_id, override)
+  # every "move the player" command this event can really reach right now
+  # (if/else follow the current switches and values; menu choices are all possible)
+  def self.live_transfers(list, map_id, ev_id, unknown = true)
+    return live_effects(list, map_id, ev_id, unknown)[0]
+  end
+
+  # [moves this event really reaches now, values / switches it sets on the way]
+  def self.live_effects(list, map_id, ev_id, unknown = true)
+    out = []
+    eff = {}
+    skip = nil
+    taken = {}
+    (list || []).each do |q|
+      ind = q.indent
+      if skip
+        next if ind > skip
+        if ind == skip
+          if q.code == 411 && !taken[ind]
+            skip = nil
+          elsif q.code == 412
+            skip = nil
+          end
+          next
+        end
+        skip = nil
+      end
+      pr = q.parameters
+      case q.code
+      when 111
+        b = branch_true?(pr, map_id, ev_id, nil, unknown)
+        taken[ind] = b
+        skip = ind if !b
+      when 411
+        skip = ind if taken[ind]
+      when 201
+        out << q if pr[0] == 0
+      when 122
+        eff[[:v, pr[0]]] = pr[4] if pr[0] == pr[1] && pr[2] == 0 && pr[3] == 0 && route_var?(pr[0])
+      when 121
+        eff[[:s, pr[0]]] = (pr[2] == 0) if pr[0] == pr[1]
+      end
+    end
+    return [out, eff]
+  end
+
+  # only values that decide which page an event is on matter for finding a way
+  def self.route_var?(v)
+    @route_vars ||= begin
+      h = {}
+      (defined?(RH_CONDVAR_DATA) ? RH_CONDVAR_DATA : "").split(",").each { |x| h[x.to_i] = true }
+      h
+    end
+    @route_vars.empty? || @route_vars[v]
+  end
+
+  def self.branch_true?(pr, map_id, ev_id, override, unknown = false)
     case pr[0]
     when 0    # switch
-      ($game_switches[pr[1]] rescue false) == (pr[2] == 0)
+      gs(pr[1]) == (pr[2] == 0)
     when 1    # variable compare
-      v = (override && override[0] == pr[1]) ? override[1] : ($game_variables[pr[1]] rescue 0).to_i
-      o = pr[2] == 0 ? pr[3] : ($game_variables[pr[3]] rescue 0).to_i
+      v = (override && override[0] == pr[1]) ? override[1] : gv(pr[1])
+      o = pr[2] == 0 ? pr[3] : gv(pr[3])
       case pr[4]
       when 0 then v == o
       when 1 then v >= o
@@ -1444,8 +1602,10 @@ module RH
       end
     when 2    # self switch
       ($game_self_switches[[map_id, ev_id, pr[1]]] rescue false) == (pr[2] == 0)
+    when 6    # which way someone faces: you can always turn
+      true
     else
-      false
+      unknown
     end
   rescue
     false
@@ -1522,6 +1682,13 @@ module RH
     nx = x + dx
     ny = y + dy
     return nil if nx < 0 || ny < 0 || nx >= md[:w] || ny >= md[:h]
+    if (js = md[:jumps] && md[:jumps][[nx, ny]]) && (jd = js[d] || js[:any])
+      lx = x + jd[0]
+      ly = y + jd[1]
+      return nil if lx < 0 || ly < 0 || lx >= md[:w] || ly >= md[:h] || md[:block][[lx, ly]]
+      return nil if !m_pass(md, lx, ly, 10 - d) && !m_pass(md, lx, ly, d)
+      return [lx, ly]
+    end
     return nil if !m_pass(md, x, y, d) || !m_pass(md, nx, ny, 10 - d) || md[:block][[nx, ny]]
     if md[:boulder][[nx, ny]]   # Strength boulder: only if it can be pushed one tile further
       bx = nx + dx
@@ -1623,12 +1790,12 @@ module RH
   def self.m_exits(md, f)
     return f[:exits] if f[:exits]
     out = []
-    md[:warps].each do |x, y, to, tx, ty, lv|
+    md[:warps].each do |x, y, to, tx, ty, lv, eff|
       if lv == :auto      # happens by itself as soon as you arrive
-        out << [to, tx, ty, [f[:tiles].keys.first], :walk]
+        out << [to, tx, ty, [f[:tiles].keys.first], :walk, eff]
         next
       end
-      out << [to, tx, ty, [[x, y]], lv ? :lever : :walk] if touch?(f[:tiles], x, y)
+      out << [to, tx, ty, [[x, y]], lv ? :lever : :walk, eff] if touch?(f[:tiles], x, y)
     end
     w = md[:w]
     h = md[:h]
@@ -1737,7 +1904,16 @@ module RH
       db[:models].delete([here, :people])
       db[:plans] = {}
     end
-    md = model(here)
+    # keep hold of every area picture this search uses, so things changing while it runs
+    # in the background (people walking, values updating) can't mix two different pictures
+    mods = {}
+    get = lambda { |i|
+      refs = map_refs(i)
+      k = [i, (@rh_ov || {}).select { |kk, _| refs[kk] }]
+      mods.key?(k) ? mods[k] : (mods[k] = model(i))
+    }
+    @rh_ov = {}
+    md = get.call(here)
     return nil if !md
     start = m_flood(md, $game_player.x, $game_player.y)
     key = [here, start[:id], targets, spot, relax]
@@ -1749,7 +1925,7 @@ module RH
     return $rh_fail[fk][1] if $rh_fail[fk] && Graphics.frame_count - $rh_fail[fk][0] < 900
     return nil if !$rh_in_fiber && $rh_quick[fk] && Graphics.frame_count - $rh_quick[fk] < 900   # quick check already ran out of time
     dist = static_dist(targets)
-    st0 = [here, start[:id]]
+    st0 = [here, start[:id], {}]
     prev = { st0 => nil }
     first = {}
     open = [[dist[here] || 99, 0, st0]]
@@ -1765,15 +1941,20 @@ module RH
       end
       open.sort_by! { |a| [a[0] + a[1], a[1]] }
       _, g0, cur = open.shift
-      cm, cf = cur
-      cmd = model(cm)
+      cm, cf, cov = cur
+      @rh_ov = cov
+      cmd = get.call(cm)
       next if !cmd
       f = cmd[:floods][cf]
-      m_exits(cmd, f).each do |to, tx, ty, tiles, kind|
+      next if !f
+      m_exits(cmd, f).each do |to, tx, ty, tiles, kind, eff|
+        nov = eff ? cov.merge(eff) : cov
+        nov = cov if nov.size > 24          # keep the what-ifs small
+        @rh_ov = nov
         if targets.include?(to)
           ok = true
           if spot
-            dm = model(to)
+            dm = get.call(to)
             ok = false
             if dm && tx >= 0 && ty >= 0 && tx < dm[:w] && ty < dm[:h]
               lf = m_flood(dm, tx, ty)
@@ -1785,7 +1966,7 @@ module RH
             break
           end
         end
-        dm = model(to)
+        dm = get.call(to)
         next if !dm
         next if tx < 0 || ty < 0 || tx >= dm[:w] || ty >= dm[:h]
         nf = dm[:floods].find { |x| x[:tiles][[tx, ty]] }
@@ -1794,7 +1975,7 @@ module RH
           next if floods > MAX_FLOODS
           nf = m_flood(dm, tx, ty)
         end
-        st = [to, nf[:id]]
+        st = [to, nf[:id], nov]
         next if prev.key?(st)
         prev[st] = cur
         first[st] = (cur == st0) ? [to, tiles, kind] : first[cur]
@@ -1814,6 +1995,7 @@ module RH
       end
       $rh_plan_chain = chain.chunk_while { |a, b| a == b }.map(&:first)
     end
+    $rh_search_info = "from #{here} (#{$game_player.x},#{$game_player.y}) area #{start[:tiles].size} tiles, looked at #{prev.size} spots in #{prev.keys.map(&:first).uniq.size} places, relax #{relax.inspect}, result #{res.nil? ? 'unfinished' : res ? 'found' : 'none'}"
     db[:plans][key] = res if !res.nil?
     $rh_fail[fk] = [Graphics.frame_count, res] if res == false
     $rh_quick[fk] = Graphics.frame_count if res.nil? && !$rh_in_fiber
@@ -1823,6 +2005,7 @@ module RH
     return nil
   ensure
     @rh_relax = false
+    @rh_ov = nil
   end
 end
 
@@ -3273,6 +3456,8 @@ module RH
     t << "Helper route: #{np ? "#{np[1]} (#{np[0].length} steps)" : 'none'}"
     t << "Helper error: #{$rh_plan_err}" if $rh_plan_err
     t << "Helper crash: #{$rh_last_err}" if $rh_last_err
+    t << "Helper search: #{$rh_search_info}" if $rh_search_info
+    t << "Helper abilities: surf #{RH.can_surf? rescue '?'}, waterfall #{RH.can_waterfall? rescue '?'}, dive #{RH.can_dive? rescue '?'}, strength #{RH.can_strength? rescue '?'}, smash #{RH.can_smash? rescue '?'}, cut #{RH.can_cut? rescue '?'}, climb #{RH.can_rockclimb? rescue '?'}"
     t << "Helper plan: " + ($rh_plan_chain || []).map { |m| RH.mapname(m) rescue m.to_s }.join(" > ") if $rh_plan_chain
     t << "Helper version: #{RH_VERSION}"
     dex = $Trainer.pokedex rescue nil
