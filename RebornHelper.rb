@@ -1,4 +1,4 @@
-RH_VERSION = 22   # bumped with every release (used by the auto-updater)
+RH_VERSION = 23   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -1014,7 +1014,18 @@ module RH
       return again
     end
     # the full search looked everywhere: don't send you wandering, say so (and the goal gets re-picked)
-    return [[], "no way to #{mapname(targets.first)} from here yet - the story goes on somewhere else first"] if sure_no
+    if sure_no
+      # the planner can't see the whole way (puzzle mechanics it doesn't model yet):
+      # still head the right direction by the map network, avoiding places you keep bouncing between
+      hop = next_hop($game_map.map_id, targets)
+      bounced = ($rh_hist || []).tally.select { |m, n| n >= 2 }.keys
+      if hop && !bounced.include?(hop)
+        path = tile_path(goal_tiles(hop))
+        path = model_path(goal_tiles(hop)) if path.empty?
+        return [path, "towards #{mapname(targets.first)} via #{mapname(hop)}"] if !path.empty?
+      end
+      return [[], "follow the step above - the way there goes through a puzzle part the dots can't draw yet"]
+    end
     bounced = ($rh_hist || []).tally.select { |m, n| n >= 2 }.keys
     hop = next_hop($game_map.map_id, targets)
     hop = nil if hop && (bounced.include?(hop) || (($rh_hist || [])[-3] == hop && ($rh_hist || [])[-2] == $game_map.map_id))
@@ -1039,7 +1050,7 @@ module RH
       end
     rescue
     end
-    return [[], "no way to #{mapname(targets.first)} from here yet - the story goes on somewhere else first"]
+    return [[], "follow the step above - the way there goes through a puzzle part the dots can't draw yet"]
   end
 
   def self.twin_of?(id)
@@ -1141,10 +1152,12 @@ module RH
     twin = r && r[:map] != here && mapname(r[:map]) == mapname(here) && (model(r[:map]) rescue nil) &&
            model(r[:map])[:w] == $game_map.width && model(r[:map])[:h] == $game_map.height
     if twin
-      # the game swaps copies of this place (e.g. water drained / filled): go to the real copy if you can,
-      # otherwise the same spot here
+      # the game swaps versions of this place (e.g. water raised / lowered): go to the right version
       res = route_to([r[:map]], spot_tiles(r))
-      return res if !res[0].empty? || !res[1].to_s.start_with?("no way")
+      return res if !res[0].empty? && !res[1].to_s.start_with?("towards")
+      # can't plan all the way: lead to whatever on this map switches you to another version (machine, lever...)
+      sw = switcher_path(r[:map])
+      return sw if sw
       r = r.merge(:map => here)
     end
     if r
@@ -1161,17 +1174,27 @@ module RH
       else
         res = route_to([r[:map]], spot_tiles(r))
       end
-      if res[0].empty? && res[1].to_s.start_with?("no way")
-        # this story step can't be reached yet: remember that, so the next real step gets picked
-        ($rh_unreach ||= {})[[r[:map], r[:x], r[:y], route_db[:sig]]] = true
-        $rh_live = nil
-        $rh_obj = nil
-        $rh_want = nil
-      end
     else
       res = route_to(key[1])
     end
     return res
+  end
+
+  # the nearest thing on this map that moves you into another version of this same place
+  def self.switcher_path(target)
+    here = $game_map.map_id
+    names = [mapname(here)]
+    best = nil
+    ($game_map.events || {}).each_value do |ev|
+      tr = (live_transfers(ev.list, here, ev.id) rescue [])
+      next if !tr.any? { |q| q.parameters[1] == target } && !tr.any? { |q| names.include?(mapname(q.parameters[1])) && q.parameters[1] != here }
+      goal = [[ev.x, ev.y + 1], [ev.x, ev.y - 1], [ev.x - 1, ev.y], [ev.x + 1, ev.y], [ev.x, ev.y]]
+      pth = tile_path(goal)
+      pth = model_path(goal) if pth.empty?
+      next if pth.empty?
+      best = pth if !best || pth.length < best.length
+    end
+    return best ? [best, "the switch here (changes this place to its other version - press A facing it)"] : nil
   end
 
   # inside the background search: hand control back to the game every ~12ms
@@ -2186,7 +2209,10 @@ module RH
       real.find_all { |c| c[:spec] > 0 }.group_by { |c| [-c[:spec], c[:to]] }.sort.each { |_, gp| groups << gp }
       groups << adds if !adds.empty?
       real.find_all { |c| c[:spec] == 0 }.group_by { |c| c[:to] }.sort.each { |_, gp| groups << gp }
-      pickg = groups.first(6).map { |gp| gp.find_all { |c| reachable_spot?(c) } }.find { |gp| !gp.empty? }
+      # never jump ahead in the story: only choose between steps that come at the same point
+      t0 = groups.first.map { |c| c[:to] }.min
+      same = groups.find_all { |gp| gp.any? { |c| c[:to] <= t0 } }
+      pickg = same.first(6).map { |gp| gp.find_all { |c| reachable_spot?(c) } }.find { |gp| !gp.empty? }
       cs = pickg || groups.first
       mine = cs.find_all { |c| c[:map] == here }
       cs = mine if !mine.empty?
@@ -2234,8 +2260,51 @@ module RH
     return part.empty? ? "middle of the map" : "#{part} side"
   end
 
+  # places the game keeps several versions of (water raised / lowered, before / after...):
+  # [all versions in order, which one this is]
+  def self.versions_of(id)
+    $rh_vers ||= {}
+    return $rh_vers[id] if $rh_vers.key?(id)
+    infos = ($cache.mapinfos rescue nil)
+    res = nil
+    if infos && infos[id]
+      nm = infos[id].name
+      root = id
+      root = infos[root].parent_id while infos[root] && infos[infos[root].parent_id] && infos[infos[root].parent_id].name == nm
+      fam = [root]
+      grow = true
+      while grow
+        grow = false
+        infos.each { |k, v| if !fam.include?(k) && fam.include?(v.parent_id) && v.name == nm then fam << k; grow = true end }
+      end
+      fam = [root] + (fam - [root]).sort
+      res = [fam, fam.index(id)] if fam.length > 1
+    end
+    $rh_vers[id] = res
+  end
+
+  # "with the water raised / lowered" for the water grids; "(version N)" for other multi-version places
+  def self.version_text(id)
+    v = versions_of(id)
+    return "" if !v
+    return (v[1] <= 1 ? " with the water RAISED" : " with the water LOWERED") if mapname(id).to_s =~ /Water Grid/
+    return " (version #{v[1] + 1} of #{v[0].length})"
+  end
+
+  # which step of a long story chain you're on, e.g. "Step 10 of 40"
+  def self.step_count_text(r)
+    var = r[:v] || r[:var]
+    return "" if !var
+    tos = story_recs.find_all { |x| x[:v] == var }.map { |x| x[:to] }
+    return "" if tos.length < 4
+    cur = ($game_variables[var] rescue 0).to_i
+    "Step #{tos.uniq.count { |t| t <= cur } + 1} of #{tos.uniq.length}: "
+  rescue
+    ""
+  end
+
   def self.live_text(r)
-    place = mapname(r[:map])
+    place = mapname(r[:map]) + version_text(r[:map])
     place = "this area" if r[:map] == ($game_map.map_id rescue -1)
     where = (where_text(r) rescue "")
     wh = where.empty? ? "" : " (#{where})"
@@ -2249,7 +2318,10 @@ module RH
         else "Go to the marked spot in #{place}#{wh} - a scene starts" + (who.empty? ? "." : " (#{who}).")
         end
     t += " Battle ahead: #{r[:battle]} - heal first." if r[:battle]
-    return t
+    if r[:map] != ($game_map.map_id rescue -1) && mapname(r[:map]) == mapname(($game_map.map_id rescue 0))
+      t += " You're in the other version of this place - use the switch/machine the dots lead to."
+    end
+    return step_count_text(r) + t
   end
 end
 
