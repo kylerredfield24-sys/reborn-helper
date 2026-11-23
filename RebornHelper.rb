@@ -1,4 +1,4 @@
-RH_VERSION = 18   # bumped with every release (used by the auto-updater)
+RH_VERSION = 19   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -911,12 +911,13 @@ module RH
       best = [d, j] if !best || d < best[0] || (d == best[0] && j > best[1])
     end
     return nil if !best
-    if best[0] > 5
-      # off the line: small search back to it (cached per tile, so it's cheap even on the bike)
+    if best[0] > 1
+      # off the line: find a real way back to it using the game's own walls (never draw through rocks)
       rj = rejoin(path, label, $game_player.moving? ? 350 : 900)
       return rj if rj
       busy = $game_player.moving? || !$rh_still || $rh_still[0] != [px, py] || Graphics.frame_count - $rh_still[1] < 8
       return nil if !busy || best[0] > 60
+      return [path[best[1]..-1], label]     # mid-step: keep the line, no fake shortcut
     end
     j = best[1]
     tx, ty = path[j]
@@ -1108,7 +1109,7 @@ module RH
   end
 
   # blockers on one event spot -> :tile id, :boulder, :block or nil
-  def self.sort_blocker(md, x, y, through, tile_id, charname, list, name = "")
+  def self.sort_blocker(md, x, y, through, tile_id, charname, list, name = "", moves = true)
     if climb_wall?(name, list)
       md[:block][[x, y]] = true
       return
@@ -1117,7 +1118,8 @@ module RH
     if tile_id.to_i > 0
       md[:evtile][[x, y]] = tile_id
     elsif charname.to_s != "" && !clearable?(list)
-      return if @rh_relax == :people                    # last try: people in the way usually move / can be talked past
+      # last try: only people who actually walk around get ignored - rocks, signs, guards and objects stay solid
+      return if @rh_relax == :people && moves
       if boulder?(list) && (can_strength? || @rh_relax)   # relaxed search: assume boulders can be moved
         md[:boulder][[x, y]] = true
       else
@@ -1233,7 +1235,7 @@ module RH
       next if !pg
       if !live
         gfx = pg.graphic
-        sort_blocker(md, ev.x, ev.y, pg.through, gfx.tile_id, gfx.character_name, pg.list, ev.name)
+        sort_blocker(md, ev.x, ev.y, pg.through, gfx.tile_id, gfx.character_name, pg.list, ev.name, pg.move_type != 0)
       end
       next if pg.trigger == 3 || pg.trigger == 4
       # every destination this event can send you to (trains / boats / menus have several)
@@ -1247,7 +1249,8 @@ module RH
     end
     if live
       $game_map.events.each_value do |ev|
-        sort_blocker(md, ev.x, ev.y, ev.through, ev.tile_id, ev.character_name, (ev.list rescue nil), (ev.name rescue "")) rescue nil
+        mv = ((ev.instance_variable_get(:@move_type) || 0) != 0) rescue false
+        sort_blocker(md, ev.x, ev.y, ev.through, ev.tile_id, ev.character_name, (ev.list rescue nil), (ev.name rescue ""), mv) rescue nil
       end
     end
     ($rh_blocked || {}).each_key { |(mid, t)| md[:block][t] = true if mid == id }   # learned walls (this visit only)
