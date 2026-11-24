@@ -1,8 +1,13 @@
-version|34
+version|35
+note|The helper now shows the walkthrough (wiki) step for where you are, matched to your game's own switches. Where the dots can't solve a puzzle yet, the step text tells you exactly what to do.
 note|Panels and consoles that only work facing one way (like "face up") are now routed to the right side, and the dots never cut through ledges, rails or computers.
 note|Dots now follow the game's own height rules: no more lines over ledges, rails or panels you can't really cross. If a spot is on a different level, the dots take the stairs / the way around.
 note|New font option: More tab > Font > "Modern" (clean, medium size). Helper version now shows small in the menu corner.
-note|Dots no longer flicker while you walk or bike off the line.
-note|Water Treatment: the dots now lead to the Central Obsidia computer by the turnstile (stand below it, face up) - the way there goes through North Obsidia and Opal.
-note|"Onyx Water Grid" and the other Water Grids are rooms inside the Water Treatment Center (not Reborn City).
-note|Route tab: 'Remember this spot', then 'Lead me back' gets dots back to it.
+# walkthrough steps (wiki: reborn-rebalance-out.pages.dev/walkthroughs/17_water_treatment), matched to game switches/values
+# guide|conditions|map|x|y|text   (map -1 = keep story dots, 0 = no dots, >0 = dots to that exact tile)
+guide|v276=9&!s585|0|0|0|Wiki step: In Central Obsidia, go to the west door and use the computer there - it unblocks a one-way turnstile. Then head north.
+guide|v276=9&s585&!s546|0|0|0|Wiki step: Go back to Peridot Water Grid - the shutter there is open now. Push the rubbish piles to the other side, raise the water, jump over them, then use the computer at the top ("SYSTEM STORAGE UNLOCKED").
+guide|v276=9&s546&v259>=2|0|0|0|Wiki step: In Peridot Water Grid, go back through the turnstile and lower the water at the water machine (stand below it, face up). That opens a set of stairs.
+guide|v276=9&s546|0|0|0|Wiki step: Take the stairs that opened in Peridot and follow them across to the next room where Titania is (Onyx Water Grid), then go down the stairs to the acolytes.
+guide|v276>=11&v276<=13|-1|0|0|Wiki step: Beat the acolytes for the cutscene about opening the door. Then go back through the upper-right door, up the stairs, and out the top-left door.
+guide|v276>=23&v276<=24|0|0|0|Wiki step: The water system works again. Go into every room and raise the water until it's clean blue water (Surf where needed) - the map in the central room shows which wards still need it. Then go back to the Beryl room.

@@ -1,4 +1,4 @@
-RH_VERSION = 34   # bumped with every release (used by the auto-updater)
+RH_VERSION = 35   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -77,8 +77,6 @@ module RH
 
   def self.rules
     [
-      # Water Treatment: the rubbish-pile part needs this computer first (read from the map: Central Obsidia ev48, "C. OBSIDIA SHUTTER UNLOCKED")
-      [proc { var(276) == 9 && !sw?(550) }, "Water Treatment: use the computer by the turnstile in Central Obsidia (stand below it, face up). You reach it from the bottom-left door (from Opal) - the dots show the way once a real path exists.", 469, [15, 24]],
       [proc { apt_puzzle? && !sw?(507) && var(193) == 16 }, "Go back outside the apartment building - a scene plays.", 439, 142],
       [proc { apt_puzzle? && !sw?(507) }, "Go back up to Blake's room and talk to Shelly - she starts the search.", 457, 9],
       [proc { apt_puzzle? && sw?(507) && sw?(2227) }, "Puzzle skip is on: step on the White Shard by the crate in Blake's room to skip this puzzle.", 457, 41],
@@ -324,7 +322,7 @@ module RH
   end
 
   def self.objective
-    key = [STORY_VARS.map { |v| ($game_variables[v] rescue 0) }, ($Trainer.numbadges rescue 0), sw?(499), has_item?(:HM06), ((rule_step || {})[:text] rescue nil), (g[:clues].first rescue nil), (updates[:obj].length rescue 0), ($game_map.map_id rescue 0),
+    key = [STORY_VARS.map { |v| ($game_variables[v] rescue 0) }, ($Trainer.numbadges rescue 0), sw?(499), has_item?(:HM06), ((rule_step || {})[:text] rescue nil), ((guide_step || {})[:text] rescue nil), (g[:clues].first rescue nil), (updates[:obj].length rescue 0), ($game_map.map_id rescue 0),
            (pbMapInterpreterRunning? rescue false),
            ((lr = (live_step rescue nil)) ? [lr[:map], lr[:id], lr[:x], lr[:y]] : nil), ($game_player.x / 4 rescue 0), ($game_player.y / 4 rescue 0)]
     return $rh_obj[1] if $rh_obj && $rh_obj[0] == key
@@ -336,6 +334,8 @@ module RH
   def self.objective_uncached
     u = (update_obj rescue nil)
     return u[:text] if u
+    gs = (guide_step rescue nil)
+    return gs[:text] if gs
     rs = (rule_step rescue nil)
     return rs[:text] if rs
     lr = (live_step rescue nil)
@@ -1111,6 +1111,11 @@ module RH
       r = rs if rs
       u = (update_obj rescue nil)
       r = { :map => u[:map], :id => 0, :x => u[:x], :y => u[:y], :to => u[:val] } if u && u[:map] > 0
+      # walkthrough step: map > 0 = dots to that exact tile, 0 = no dots (puzzle part), -1 = keep the story dots
+      gs = (guide_step rescue nil)
+      if gs && gs[:map] >= 0
+        r = gs[:map] > 0 ? { :map => gs[:map], :id => 0, :x => gs[:x], :y => gs[:y], :trig => 1, :to => -1 } : { :map => 0, :id => 0, :x => 0, :y => 0, :to => -1 }
+      end
       return [nil, nil] if !r
       # a person who walks around keeps the same goal (don't re-plan every time they take a step)
       spot = r[:id].to_i > 0 ? [r[:id]] : [r[:id], r[:x], r[:y]]
@@ -3290,6 +3295,7 @@ end
 #==============================================================================
 module RH
   UPDATE_URL = "https://raw.githubusercontent.com/kylerredfield24-sys/reborn-helper/main/updates.txt"
+  UPDATE_CACHE = "./patch/Mods/RebornHelper_updates_cache.txt"
   FONT_URL   = "https://raw.githubusercontent.com/kylerredfield24-sys/reborn-helper/main/fonts/Poppins-Medium.ttf"
   MOD_URL    = "https://raw.githubusercontent.com/kylerredfield24-sys/reborn-helper/main/RebornHelper.rb"
 
@@ -3335,6 +3341,7 @@ module RH
     return if File.exist?("./patch/Mods/RebornHelper_settings.txt") && File.read("./patch/Mods/RebornHelper_settings.txt") =~ /^sync=false/
     txt = IO.popen(["/usr/bin/curl", "-fsSL", "--max-time", "4", UPDATE_URL], err: File::NULL) { |io| io.read }.to_s
     want = (txt[/^version\|(\d+)/, 1] || 0).to_i
+    parse_updates(txt.empty? ? (File.read(UPDATE_CACHE) rescue "") : txt) rescue nil   # walkthrough steps ready right away
     return if want <= RH_VERSION
     self_update(want)
     return if updates[:selfupdate] != want
@@ -3352,7 +3359,9 @@ module RH
     Thread.new do
       begin
         txt = IO.popen(["/usr/bin/curl", "-fsSL", "--max-time", "6", UPDATE_URL], err: File::NULL) { |io| io.read }
+        txt = (File.read(UPDATE_CACHE) rescue "") if txt.to_s.empty?    # offline: use the last copy
         parse_updates(txt.to_s)
+        (File.open(UPDATE_CACHE, "wb") { |f| f.write(txt) } rescue nil) if txt.to_s.include?("version|")
         self_update(updates[:version].to_i) if updates[:version].to_i > 0
         updates[:status] = txt.to_s.empty? ? "no updates found" : "updated"
       rescue
@@ -3365,6 +3374,7 @@ module RH
 
   def self.parse_updates(txt)
     objs = []
+    guides = []
     notes = []
     updates[:choice] = {}
     txt.each_line do |l|
@@ -3380,12 +3390,44 @@ module RH
         updates[:version] = a[1].to_i
       elsif a[0] == "choice" && a.length >= 4
         (updates[:choice] ||= {})[[a[1].to_i, a[2].to_i]] = a[3..-1].join("|")[0, 200]
+      elsif a[0] == "guide" && a.length >= 6
+        guides << { :cond => a[1].to_s, :map => a[2].to_i, :x => a[3].to_i, :y => a[4].to_i, :text => a[5..-1].join("|")[0, 240] }
       elsif a[0] == "note" && a.length >= 2
         notes << a[1..-1].join("|")[0, 200]
       end
     end
     updates[:obj] = objs
+    updates[:guide] = guides
     updates[:notes] = notes.first(10)
+  end
+
+  # walkthrough steps (from the wiki, matched to the game's own switches / values), sent with the updates:
+  #   guide|v276=9&s585&!s546|map|x|y|text      v = value (= >= <= > < !=), s / !s = switch on / off, b = badges
+  def self.guide_step
+    (updates[:guide] || []).find { |gd| guide_cond?(gd[:cond]) }
+  end
+
+  def self.guide_cond?(c)
+    c.split("&").all? do |t|
+      if t =~ /\A(!?)s(\d+)\z/
+        sw?($2.to_i) == ($1 != "!")
+      elsif t =~ /\A([vb])(\d*)(>=|<=|!=|=|>|<)(-?\d+)\z/
+        cur = $1 == "b" ? ($Trainer.numbadges rescue 0) : (($game_variables[$2.to_i] rescue 0).to_i)
+        n = $4.to_i
+        case $3
+        when "=" then cur == n
+        when ">=" then cur >= n
+        when "<=" then cur <= n
+        when ">" then cur > n
+        when "<" then cur < n
+        else cur != n
+        end
+      else
+        false
+      end
+    end
+  rescue
+    false
   end
 
   def self.update_obj
