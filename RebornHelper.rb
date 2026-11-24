@@ -1,4 +1,4 @@
-RH_VERSION = 35   # bumped with every release (used by the auto-updater)
+RH_VERSION = 36   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -50,11 +50,25 @@ module RH
              # clean modern look (Poppins Medium, free font, installed in the game's Fonts folder), medium size, no shadow
              ["Modern", ["Poppins", "Poppins Medium", "Arial"], 12, false, false, 15]]
 
+  # every battle-usable healing item in Reborn (amounts read from the game's ItemEffects.rb)
   HEAL_ITEMS = {
-    :POTION => 20, :FRESHWATER => 30, :BERRYJUICE => 20, :SODAPOP => 50,
-    :SUPERPOTION => 60, :LEMONADE => 70, :MOOMOOMILK => 100,
-    :HYPERPOTION => 120, :ULTRAPOTION => 200, :MAXPOTION => 9999, :FULLRESTORE => 9999
+    :POTION => 20, :FRESHWATER => 30, :BERRYJUICE => 20, :SODAPOP => 50, :SWEETHEART => 20, :ORANBERRY => 10,
+    :SUPERPOTION => 60, :LEMONADE => 70, :MOOMOOMILK => 100, :MAGICMILK => 100, :ENERGYPOWDER => 60,
+    :VANILLAIC => 30, :CHOCOLATEIC => 70, :STRAWBIC => 90, :BLUEMIC => 200, :BUBBLETEA => 180, :MEMEONADE => 103,
+    :STRAWCAKE => 150, :CHINESEFOOD => 300, :ENERGYROOT => 120,
+    :HYPERPOTION => 120, :ULTRAPOTION => 200, :MAXPOTION => 9999, :FULLRESTORE => 9999, :SITRUSBERRY => :quarter
   }
+  # status cures (:all = every status)
+  CURE_ITEMS = {
+    :FULLHEAL => :all, :FULLRESTORE => :all, :HEALPOWDER => :all, :RAGECANDYBAR => :all, :LUMBERRY => :all,
+    :AWAKENING => [:SLEEP], :CHESTOBERRY => [:SLEEP], :BLUEFLUTE => [:SLEEP], :POKEFLUTE => [:SLEEP], :POPROCKS => [:SLEEP],
+    :ANTIDOTE => [:POISON], :PECHABERRY => [:POISON], :PEPPERMINT => [:POISON],
+    :BURNHEAL => [:BURN], :RAWSTBERRY => [:BURN], :SALTWATERTAFFY => [:BURN],
+    :PARLYZHEAL => [:PARALYSIS], :CHERIBERRY => [:PARALYSIS], :CHEWINGGUM => [:PARALYSIS],
+    :ICEHEAL => [:FROZEN], :ASPEARBERRY => [:FROZEN], :REDHOTS => [:FROZEN]
+  }
+  # bring a fainted Pokemon back (share of max HP)
+  REVIVE_ITEMS = { :REVIVE => 0.5, :FUNNELCAKE => 0.5, :COTTONCANDY => 0.5, :MAXREVIVE => 1.0, :HERBALTEA => 1.0, :REVIVALHERB => 1.0 }
 
   # Hand-checked objectives for spots where the story variables alone are not enough.
   # Each rule: condition -> text + target (map id, event id or x/y). Checked before the auto story tracker.
@@ -2599,14 +2613,141 @@ module RH
     @incoming = v
   end
 
+  def self.heal_amt(item, mon)
+    v = HEAL_ITEMS[item]
+    return (mon.totalhp / 4.0).floor if v == :quarter
+    return v.to_i
+  end
+
+  def self.bag_qty(item)
+    ($PokemonBag.pbQuantity(item) rescue 0).to_i
+  end
+
   def self.best_heal(mon)
     missing = mon.totalhp - mon.hp
     return nil if missing <= 0 || !$PokemonBag
-    have = HEAL_ITEMS.keys.find_all { |k| ($PokemonBag.pbQuantity(k) rescue 0) > 0 }
+    have = HEAL_ITEMS.keys.find_all { |k| bag_qty(k) > 0 }
     return nil if have.empty?
-    fit = have.find_all { |k| HEAL_ITEMS[k] >= missing }.min_by { |k| HEAL_ITEMS[k] }
-    fit ||= have.max_by { |k| HEAL_ITEMS[k] }
+    fit = have.find_all { |k| heal_amt(k, mon) >= missing }.min_by { |k| heal_amt(k, mon) }
+    fit ||= have.max_by { |k| heal_amt(k, mon) }
     return fit
+  end
+
+  # race: who knocks who out first, from these HP values (you attack with lo, they hit you with hi)
+  def self.race(my_hp, foe_hp, lo, hi, first)
+    return [false, 99, 99] if lo <= 0 || my_hp <= 0
+    nk = (foe_hp.to_f / lo).ceil
+    nf = hi <= 0 ? 99 : (my_hp.to_f / hi).ceil
+    return [(first ? nk <= nf : nk < nf), nk, nf]
+  end
+
+  def self.status_of(b)
+    st = (b.status rescue nil)
+    st = nil if st == 0 || st == :NONE
+    return st
+  end
+
+  # the most reliable winning move for this Pokemon vs this foe: [win chance, move name, hits needed, their hits needed]
+  def self.best_race_move(battle, att, foe, my_hp, foe_hit, first)
+    best = nil
+    att.moves.each do |m|
+      next if !m || !m.move || m.pp <= 0
+      lo, hi = dmg(battle, att, foe, m)
+      next if lo <= 0
+      win, nk, nf = race(my_hp, foe.hp, lo, foe_hit, first)
+      acc = (m.accuracy rescue 100).to_i
+      acc = 100 if acc <= 0
+      p = win ? (acc / 100.0) ** nk : 0.0
+      cand = [p, mname(m.move), nk, nf]
+      best = cand if !best || cand[0] > best[0] || (cand[0] == best[0] && cand[2] < best[2])
+    end
+    return best
+  end
+
+  def self.foe_max_hit(battle, foe, target)
+    hi = 0
+    foe.moves.each do |m|
+      next if !m || !m.move
+      lo2, hi2 = dmg(battle, foe, target, m)
+      hi = hi2 if hi2 > hi
+    end
+    return hi
+  end
+
+  # Singles: weigh every real option (attack, heal / cure from your bag, switch, revive) by who wins the race,
+  # using current HP, speed and the worst damage roll they can do. Returns [text, color] only for a winning plan.
+  def self.race_advice(battle, a)
+    return nil if a[:foes].length != 1 || (battle.doublebattle rescue false)
+    me = a[:me]
+    foe = a[:foes][0]
+    hit = foe_max_hit(battle, foe, me)
+    first = faster?(me, foe, battle)
+    st = status_of(me)
+    stuck = [:SLEEP, :FROZEN].include?(st)
+    opts = []
+    # 1) just attack
+    if !stuck
+      bm = best_race_move(battle, me, foe, me.hp, hit, first)
+      if bm && bm[0] > 0
+        tail = bm[3] >= 99 ? "they can't hurt you" : "they need #{bm[3]}"
+        opts << [bm[0], 4, "Attack: #{bm[1]} - you KO in #{bm[2]}, #{tail}", GOOD]
+      end
+    end
+    # 2) heal / cure from the bag first (items go before attacks; they still hit you this turn)
+    if $PokemonBag
+      tried = {}
+      (HEAL_ITEMS.keys + CURE_ITEMS.keys).uniq.each do |it|
+        next if tried[it] || bag_qty(it) <= 0
+        tried[it] = true
+        cures = CURE_ITEMS[it]
+        cured = st && cures && (cures == :all || cures.include?(st))
+        amt = HEAL_ITEMS[it] ? heal_amt(it, me) : 0
+        next if amt <= 0 && !cured
+        next if amt > 0 && me.hp >= me.totalhp && !cured
+        hp1 = [me.hp + amt, me.totalhp].min - hit
+        next if hp1 <= 0                       # you'd still go down this turn: the item is wasted
+        next if !cured && stuck
+        bm = best_race_move(battle, me, foe, hp1, hit, first)
+        next if !bm || bm[0] <= 0
+        waste = amt > 0 ? [me.hp + amt - me.totalhp, 0].max : 0
+        why = cured ? "cures #{st.to_s.downcase}" : "+#{[amt, me.totalhp - me.hp].min} HP"
+        opts << [bm[0] * 0.98, 2, "Use #{iname(it)} (#{why}), then #{bm[1]} - you win the race", WARN, waste]
+      end
+    end
+    # 3) switch to someone who wins the race after taking one hit coming in
+    party = (battle.pbParty(me.index) rescue $Trainer.party)
+    party.each_with_index do |p, pi|
+      next if !p || p.isEgg? || p.hp <= 0
+      next if battle.battlers.any? { |b| b && b.pokemon.equal?(p) && b.hp > 0 }
+      fake = (battle.ai.pbMakeFakeBattler(p, pi, false, me.index) rescue nil)
+      next if !fake
+      fh = foe_max_hit(battle, foe, fake)
+      hp1 = p.hp - fh
+      next if hp1 <= 0
+      bm = best_race_move(battle, fake, foe, hp1, fh, faster?(fake, foe, battle))
+      next if !bm || bm[0] <= 0
+      opts << [bm[0] * 0.95, 3, "Switch to #{p.name}, then #{bm[1]} - it wins from there", WARN]
+    end
+    # 4) bring back a fainted Pokemon that would win if it comes in free (after this one goes down)
+    if $PokemonBag
+      rv = REVIVE_ITEMS.keys.find_all { |k| bag_qty(k) > 0 }.min_by { |k| REVIVE_ITEMS[k] }
+      if rv
+        party.each_with_index do |p, pi|
+          next if !p || p.isEgg? || p.hp > 0
+          fake = (battle.ai.pbMakeFakeBattler(p, pi, false, me.index) rescue nil)
+          next if !fake
+          rhp = [(p.totalhp * REVIVE_ITEMS[rv]).floor, 1].max
+          fake.instance_variable_set(:@hp, rhp)     # (only the stand-in's HP - the real Pokemon isn't touched)
+          fh = foe_max_hit(battle, foe, fake)
+          bm = best_race_move(battle, fake, foe, rhp, fh, faster?(fake, foe, battle))
+          next if !bm || bm[0] <= 0
+          opts << [bm[0] * 0.8, 1, "Use #{iname(rv)} on #{p.name} - when #{me.name} goes down, send #{p.name} in free and #{bm[1]}", WARN]
+        end
+      end
+    end
+    return nil if opts.empty?
+    pick = opts.max_by { |o| [o[0], o[1], -(o[4] || 0)] }
+    return [pick[2], pick[3]]
   end
 
   def self.type_mult(atype, types)
@@ -2879,6 +3020,13 @@ module RH
 
   # One clear decision, based on everyone's CURRENT HP and speed.
   def self.advice(battle, a)
+    me0 = a[:me]
+    b0 = a[:best]
+    # a clean KO this turn that they can't stop: just do it
+    unless b0 && b0[5] == 2 && (!a[:danger] || a[:danger][0] < me0.hp || faster?(me0, a[:danger][2], battle))
+      ra = (race_advice(battle, a) rescue nil)
+      return ra if ra
+    end
     st = (strategy(battle, a) rescue nil)
     return st if st
     me = a[:me]
@@ -2893,7 +3041,7 @@ module RH
       sw = (rank_switches(battle, me.index).find { |o| !o[:faints] } rescue nil)
       return ["Switch to #{sw[:mon].name}", WARN] if sw
       heal = best_heal(me)
-      if heal && [me.hp + HEAL_ITEMS[heal], me.totalhp].min > dg[0]
+      if heal && [me.hp + heal_amt(heal, me), me.totalhp].min > dg[0]
         return ["Heal: #{iname(heal)}", WARN]
       end
       return ["Attack: #{best[1][:name]} (you may faint)", BAD] if best
