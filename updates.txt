@@ -1,6 +1,5 @@
-version|30
-note|"Onyx Water Grid" and the other Water Grids are rooms inside the Water Treatment Center (not Reborn City). The goal text now says so.
-note|Updates now load the same time you start the game - one restart is enough.
-note|Route tab: 'Remember this spot', then 'Lead me back' gets dots back to it (through doors, water levels and switches).
-note|Stairs and jump pads in puzzle areas are read correctly now, so the dots stop dead-ending there.
-note|Water Treatment: the dots use the water consoles to change levels. If they still can't reach Onyx, press R > Claude tab > 'Copy context for Claude' and tell Claude.
+version|31
+note|Dots no longer flicker while you walk or bike off the line.
+note|Water Treatment: the dots now lead to the Central Obsidia computer by the turnstile (stand below it, face up) - the way there goes through North Obsidia and Opal.
+note|"Onyx Water Grid" and the other Water Grids are rooms inside the Water Treatment Center (not Reborn City).
+note|Route tab: 'Remember this spot', then 'Lead me back' gets dots back to it.

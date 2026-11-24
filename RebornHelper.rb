@@ -1,4 +1,4 @@
-RH_VERSION = 30   # bumped with every release (used by the auto-updater)
+RH_VERSION = 31   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -75,6 +75,8 @@ module RH
 
   def self.rules
     [
+      # Water Treatment: the rubbish-pile part needs this computer first (read from the map: Central Obsidia ev48, "C. OBSIDIA SHUTTER UNLOCKED")
+      [proc { var(276) == 9 && !sw?(550) }, "Water Treatment: in Central Obsidia, stand below the computer by the turnstile and face up to use it - it unlocks the C. Obsidia shutter.", 469, [15, 24]],
       [proc { apt_puzzle? && !sw?(507) && var(193) == 16 }, "Go back outside the apartment building - a scene plays.", 439, 142],
       [proc { apt_puzzle? && !sw?(507) }, "Go back up to Blake's room and talk to Shelly - she starts the search.", 457, 9],
       [proc { apt_puzzle? && sw?(507) && sw?(2227) }, "Puzzle skip is on: step on the White Shard by the crate in Blake's room to skip this puzzle.", 457, 41],
@@ -99,7 +101,10 @@ module RH
   def self.rule_step
     rules.each do |cond, txt, map, ev|
       ok = (cond.call rescue false)
-      return { :text => txt, :map => map, :id => ev, :x => 0, :y => 0, :to => -1 } if ok
+      next if !ok
+      # ev can be [x, y]: an exact tile to stand on (e.g. below a panel you must face up at)
+      return { :text => txt, :map => map, :id => 0, :x => ev[0], :y => ev[1], :trig => 1, :to => -1 } if ev.is_a?(Array)
+      return { :text => txt, :map => map, :id => ev, :x => 0, :y => 0, :to => -1 }
     end
     return nil
   end
@@ -937,11 +942,20 @@ module RH
     return nil if !best
     if best[0] > 1
       # off the line: find a real way back to it using the game's own walls (never draw through rocks)
-      if $game_player.moving?
-        # moving (walking / biking): no search mid-step, keeps the game smooth; the real link is found when you stop
+      walking = $game_player.moving? || !$rh_still || $rh_still[0] != [px, py] || Graphics.frame_count - $rh_still[1] < 8
+      if walking
+        # walking / biking: no search mid-walk (smooth), and keep the last drawn line steady instead of
+        # switching between two lines every step (that was the flicker); the real link is found when you stop
+        lr = $rh_follow_last
+        if lr && lr[0].equal?(path)
+          k = lr[1][0].index([px, py])
+          return [lr[1][0][k..-1], label] if k
+          return lr[1] if best[0] <= 60
+        end
         return best[0] <= 60 ? [path[best[1]..-1], label] : nil
       end
       rj = rejoin(path, label, 900)
+      $rh_follow_last = [path, rj] if rj
       return rj if rj
       busy = $game_player.moving? || !$rh_still || $rh_still[0] != [px, py] || Graphics.frame_count - $rh_still[1] < 8
       return nil if !busy || best[0] > 60
