@@ -1,4 +1,5 @@
-version|33
+version|34
+note|Panels and consoles that only work facing one way (like "face up") are now routed to the right side, and the dots never cut through ledges, rails or computers.
 note|Dots now follow the game's own height rules: no more lines over ledges, rails or panels you can't really cross. If a spot is on a different level, the dots take the stairs / the way around.
 note|New font option: More tab > Font > "Modern" (clean, medium size). Helper version now shows small in the menu corner.
 note|Dots no longer flicker while you walk or bike off the line.

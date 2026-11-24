@@ -1,4 +1,4 @@
-RH_VERSION = 33   # bumped with every release (used by the auto-updater)
+RH_VERSION = 34   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -78,7 +78,7 @@ module RH
   def self.rules
     [
       # Water Treatment: the rubbish-pile part needs this computer first (read from the map: Central Obsidia ev48, "C. OBSIDIA SHUTTER UNLOCKED")
-      [proc { var(276) == 9 && !sw?(550) }, "Water Treatment: in Central Obsidia, stand below the computer by the turnstile and face up to use it - it unlocks the C. Obsidia shutter.", 469, [15, 24]],
+      [proc { var(276) == 9 && !sw?(550) }, "Water Treatment: use the computer by the turnstile in Central Obsidia (stand below it, face up). You reach it from the bottom-left door (from Opal) - the dots show the way once a real path exists.", 469, [15, 24]],
       [proc { apt_puzzle? && !sw?(507) && var(193) == 16 }, "Go back outside the apartment building - a scene plays.", 439, 142],
       [proc { apt_puzzle? && !sw?(507) }, "Go back up to Blake's room and talk to Shelly - she starts the search.", 457, 9],
       [proc { apt_puzzle? && sw?(507) && sw?(2227) }, "Puzzle skip is on: step on the White Shard by the crate in Blake's room to skip this puzzle.", 457, 41],
@@ -713,6 +713,8 @@ module RH
 
   def self.rh_tile_path(goals, exact = false)
     return [] if goals.empty? || !$game_player
+    # a panel you must face from one side: be exactly on that tile
+    exact = true if goals.length == 1 && $rh_stand && $rh_stand[[$game_map.map_id, goals[0][0], goals[0][1]]]
     gs = {}
     goals.each { |x, y| gs[[x, y]] = true }
     sx = $game_player.x
@@ -1018,7 +1020,7 @@ module RH
       if !twins.empty?
         $rh_twin_try = true
         begin
-          res = route_to(twins)
+          res = route_to(twins, spot)      # (same spot in the other copy - not just "anywhere" there)
         ensure
           $rh_twin_try = false
         end
@@ -1190,6 +1192,11 @@ module RH
     twin = r && r[:map] != here && mapname(r[:map]) == mapname(here) && (model(r[:map]) rescue nil) &&
            model(r[:map])[:w] == $game_map.width && model(r[:map])[:h] == $game_map.height
     if twin
+      # a spot (not a person) is usually the same in every version of the place: if you can stand on it here, go
+      if r[:id].to_i == 0 && r[:x].to_i > 0 && (st = spot_tiles(r))
+        p0 = tile_path(st, [1, 2].include?(r[:trig].to_i))
+        return [p0, "story spot"] if !p0.empty?
+      end
       # the game swaps versions of this place (e.g. water raised / lowered): go to the right version
       $rh_exact_spot = r[:id].to_i == 0 && [1, 2].include?(r[:trig].to_i)
       res = route_to([r[:map]], spot_tiles(r))
@@ -1540,6 +1547,9 @@ module RH
       # every destination this event can send you to (trains / boats / menus have several)
       tr, eff = live_effects(pg.list, id, ev.id)
       eff = nil if eff.empty?
+      # panels that only work while you face them a certain way (e.g. "face up") - remember which way
+      fd = need_face(pg.list)
+      (md[:face] ||= {})[[ev.x, ev.y]] = fd if fd && !pg.through
       tr.each do |cmd|
         md[:warps] << [ev.x, ev.y, cmd.parameters[1], cmd.parameters[2], cmd.parameters[3], nil, eff]
       end
@@ -1909,6 +1919,47 @@ module RH
     return true
   end
 
+  # where you stand to face (x, y) in direction fd (8 = facing up -> stand below it)
+  def self.face_stand(x, y, fd)
+    case fd
+    when 8 then [x, y + 1]
+    when 2 then [x, y - 1]
+    when 4 then [x + 1, y]
+    when 6 then [x - 1, y]
+    else [x, y + 1]
+    end
+  end
+
+  # if everything an event does happens only while you face one way ("if player faces up"), that direction
+  def self.need_face(list)
+    return nil if !list
+    $rh_needface ||= {}.compare_by_identity
+    return $rh_needface[list] if $rh_needface.key?(list)
+    facing = {}
+    dirs = []
+    free = false
+    list.each do |q|
+      ind = q.indent
+      case q.code
+      when 111
+        pr = q.parameters
+        if pr[0] == 6 && pr[1] == -1
+          facing[ind] = pr[2]
+        else
+          facing.delete(ind)
+        end
+      when 411, 412
+        facing.delete(ind)
+      when 201, 121, 122, 123
+        d = facing.select { |i, _| i < ind }.max_by { |i, _| i }
+        if d then dirs << d[1] else free = true end
+      end
+    end
+    $rh_needface[list] = (!free && dirs.uniq.length == 1) ? dirs[0] : nil
+  rescue
+    nil
+  end
+
   def self.touch?(tiles, x, y)
     tiles[[x, y]] || tiles[[x + 1, y]] || tiles[[x - 1, y]] || tiles[[x, y + 1]] || tiles[[x, y - 1]]
   end
@@ -1922,13 +1973,22 @@ module RH
         out << [to, tx, ty, [f[:tiles].keys.first], :walk, eff]
         next
       end
+      if (fd = md[:face] && md[:face][[x, y]])
+        # only works from one side: you must be able to stand there facing it
+        sx, sy = face_stand(x, y, fd)
+        ($rh_stand ||= {})[[md[:id], sx, sy]] = true
+        out << [to, tx, ty, [[sx, sy]], :lever, eff] if f[:tiles][[sx, sy]]
+        next
+      end
       out << [to, tx, ty, [[x, y]], lv ? :lever : :walk, eff] if touch?(f[:tiles], x, y)
     end
     # using a switch / trigger here = same place, changed state (the search remembers the change)
     (md[:toggles] || []).each do |x, y, eff, thr|
       next if !touch?(f[:tiles], x, y)
       js = md[:jumps][[x, y]]
+      fd = md[:face] && md[:face][[x, y]]
       [[0, 1, 8], [0, -1, 2], [1, 0, 4], [-1, 0, 6]].each do |dx, dy, d|   # where you stand, facing the trigger
+        next if fd && d != fd          # this panel only works facing one way
         ax = x + dx
         ay = y + dy
         next if !f[:tiles][[ax, ay]] && !(thr && f[:tiles][[x, y]])
@@ -1938,7 +1998,12 @@ module RH
           lx = (on ? x : ax) + jd[0]
           ly = (on ? y : ay) + jd[1]
         end
-        out << [md[:id], lx, ly, [[x, y]], :toggle, eff]
+        if fd && !thr
+          ($rh_stand ||= {})[[md[:id], ax, ay]] = true
+          out << [md[:id], lx, ly, [[ax, ay]], :toggle, eff]     # stand exactly here, facing it
+        else
+          out << [md[:id], lx, ly, [[x, y]], :toggle, eff]
+        end
         break
       end
     end
