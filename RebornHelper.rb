@@ -1,4 +1,4 @@
-RH_VERSION = 37   # bumped with every release (used by the auto-updater)
+RH_VERSION = 38   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -2666,6 +2666,103 @@ module RH
     return [(first ? nk <= nf : nk < nf), nk, nf]
   end
 
+  # what a Pokemon's status, held item and ability do to a fight, turn by turn
+  #   skip = turns it can't move (asleep / frozen), act = chance it gets to move each turn (paralysis, confusion)
+  #   chip = HP lost at the end of each turn (burn, poison), regen = HP back each turn (Leftovers...),
+  #   berry = one-time heal when it drops to half, sash = survives one knockout hit from full HP, recoil = HP lost per attack
+  def self.fighter_mods(b, cured = false)
+    tot = (b.totalhp rescue 1).to_i
+    m = { :skip => 0, :act => 1.0, :chip => 0, :regen => 0, :berry => 0, :sash => false, :recoil => 0, :tot => tot }
+    st = cured ? nil : status_of(b)
+    ab = (b.ability rescue nil)
+    item = (b.item rescue nil)
+    magic = ab == :MAGICGUARD
+    case st
+    when :SLEEP
+      m[:skip] = [(b.statusCount rescue 2).to_i, 1].max
+      m[:skip] = (m[:skip] / 2.0).ceil if ab == :EARLYBIRD
+    when :FROZEN
+      m[:skip] = 2                                   # 20% thaw a turn: plan on about two lost turns
+    when :PARALYSIS
+      m[:act] *= 0.75
+    when :BURN
+      m[:chip] += (tot / 16.0).floor if !magic
+    when :POISON
+      if ab == :POISONHEAL
+        m[:regen] += (tot / 8.0).floor
+      elsif !magic
+        m[:chip] += (b.statusCount rescue 0).to_i > 0 ? (tot / 16.0 * 2).floor : (tot / 8.0).floor   # badly poisoned gets worse
+      end
+    end
+    m[:act] *= 0.67 if ((b.effects[:Confusion] rescue 0).to_i > 0)
+    case item
+    when :LEFTOVERS then m[:regen] += (tot / 16.0).floor
+    when :BLACKSLUDGE then (b.pbHasType?(:POISON) rescue false) ? m[:regen] += (tot / 16.0).floor : (m[:chip] += (tot / 8.0).floor unless magic)
+    when :SITRUSBERRY then m[:berry] = (tot / 4.0).floor
+    when :ORANBERRY then m[:berry] = 10
+    when :FIGYBERRY, :WIKIBERRY, :MAGOBERRY, :AGUAVBERRY, :IAPAPABERRY then m[:berry] = (tot / 3.0).floor
+    when :FOCUSSASH then m[:sash] = (b.hp rescue 0).to_i >= tot
+    when :LIFEORB then m[:recoil] = magic ? 0 : (tot / 10.0).floor
+    when :LUMBERRY, :CHESTOBERRY then m[:skip] = 0 if st == :SLEEP
+    end
+    m[:sash] = true if ab == :STURDY && (b.hp rescue 0).to_i >= tot
+    return m
+  end
+
+  # turn-by-turn fight: you hit for lo each time you move, they hit for hi. Returns [win?, your hits, their hits, chance you get to act enough]
+  def self.sim(my_hp, foe_hp, lo, hi, first, mm, fm)
+    return [false, 99, 99, 0.0] if lo <= 0 || my_hp <= 0
+    mh = my_hp
+    fh = foe_hp
+    mm = mm.dup
+    fm = fm.dup
+    hits = 0
+    theirs = 0
+    chance = 1.0
+    1.upto(30) do |t|
+      (first ? [:me, :foe] : [:foe, :me]).each do |who|
+        if who == :me
+          next if t <= mm[:skip]
+          chance *= mm[:act]
+          hits += 1
+          if fm[:sash] && fh >= fm[:tot] && lo >= fh
+            fh = 1
+            fm[:sash] = false
+          else
+            fh -= lo
+          end
+          mh -= mm[:recoil]
+          return [true, hits, theirs, chance] if fh <= 0
+          return [false, hits, theirs, 0.0] if mh <= 0
+          if fm[:berry] > 0 && fh * 2 <= fm[:tot]
+            fh += fm[:berry]
+            fm[:berry] = 0
+          end
+        else
+          next if t <= fm[:skip] || hi <= 0
+          theirs += 1
+          if mm[:sash] && mh >= mm[:tot] && hi >= mh
+            mh = 1
+            mm[:sash] = false
+          else
+            mh -= hi
+          end
+          return [false, hits, theirs, 0.0] if mh <= 0
+          if mm[:berry] > 0 && mh * 2 <= mm[:tot]
+            mh += mm[:berry]
+            mm[:berry] = 0
+          end
+        end
+      end
+      # end of turn: burn / poison / Leftovers
+      mh = [mh - mm[:chip] + mm[:regen], mm[:tot]].min
+      fh = [fh - fm[:chip] + fm[:regen], fm[:tot]].min
+      return [true, hits, theirs, chance] if fh <= 0 && mh > 0
+      return [false, hits, theirs, 0.0] if mh <= 0
+    end
+    return [false, hits, theirs, 0.0]
+  end
+
   def self.status_of(b)
     st = (b.status rescue nil)
     st = nil if st == 0 || st == :NONE
@@ -2673,19 +2770,27 @@ module RH
   end
 
   # the most reliable winning move for this Pokemon vs this foe: [win chance, move name, hits needed, their hits needed]
-  def self.best_race_move(battle, att, foe, my_hp, foe_hit, first)
+  def self.best_race_move(battle, att, foe, my_hp, foe_hit, first, cured = false)
+    mm = fighter_mods(att, cured)
+    fm = fighter_mods(foe)
+    locked = nil
+    if [:CHOICEBAND, :CHOICESPECS, :CHOICESCARF].include?((att.item rescue nil))
+      lk = (att.effects[:ChoiceBand] rescue nil)
+      locked = lk if lk && lk != 0 && lk != -1
+    end
     best = nil
     bestkey = nil
     # more of their team still to come? then don't burn a nearly-empty move if another one wins just as safely
     left = ((battle.pbParty(foe.index) rescue []).count { |pk| pk && !(pk.isEgg? rescue false) && pk.hp > 0 } rescue 1)
     att.moves.each do |m|
       next if !m || !m.move || m.pp <= 0
+      next if locked && m.move != locked          # Choice item: stuck on the move you picked
       lo, hi = dmg(battle, att, foe, m)
       next if lo <= 0
-      win, nk, nf = race(my_hp, foe.hp, lo, foe_hit, first)
+      win, nk, nf, act = sim(my_hp, foe.hp, lo, foe_hit, first, mm, fm)
       acc = (m.accuracy rescue 100).to_i
       acc = 100 if acc <= 0
-      p = win ? (acc / 100.0) ** nk : 0.0
+      p = win ? (acc / 100.0) ** nk * act : 0.0
       scarce = left > 1 && m.pp <= 2 ? 1 : 0
       cand = [p, mname(m.move), nk, nf, m.pp]
       # safest win first, then fewest turns (a near-empty move counts as one turn slower), then most PP left
@@ -2717,14 +2822,16 @@ module RH
     hit = foe_max_hit(battle, foe, me)
     first = faster?(me, foe, battle)
     st = status_of(me)
-    stuck = [:SLEEP, :FROZEN].include?(st)
+    stuck = false          # (sleep / freeze turns are counted in the fight itself)
     opts = []
     # 1) just attack
     if !stuck
       bm = best_race_move(battle, me, foe, me.hp, hit, first)
       if bm && bm[0] > 0
-        tail = bm[3] >= 99 ? "they can't hurt you" : "they need #{bm[3]}"
-        opts << [bm[0], 4, "Attack: #{bm[1]} - you KO in #{bm[2]}, #{tail}", GOOD]
+        tail = hit <= 0 ? "they can't hurt you" : "they hit you #{bm[3]}x first"
+        tail = "they can't hurt you" if hit <= 0
+        note = st ? " (counting your #{st.to_s.downcase})" : ""
+        opts << [bm[0], 4, "Attack: #{bm[1]} - you KO in #{bm[2]} hit#{bm[2] == 1 ? '' : 's'}#{note}", GOOD]
       end
     end
     # 2) heal / cure from the bag first (items go before attacks; they still hit you this turn)
@@ -2740,8 +2847,7 @@ module RH
         next if amt > 0 && me.hp >= me.totalhp && !cured
         hp1 = [me.hp + amt, me.totalhp].min - hit
         next if hp1 <= 0                       # you'd still go down this turn: the item is wasted
-        next if !cured && stuck
-        bm = best_race_move(battle, me, foe, hp1, hit, first)
+        bm = best_race_move(battle, me, foe, hp1, hit, first, cured)
         next if !bm || bm[0] <= 0
         waste = amt > 0 ? [me.hp + amt - me.totalhp, 0].max : 0
         why = cured ? "cures #{st.to_s.downcase}" : "+#{[amt, me.totalhp - me.hp].min} HP"

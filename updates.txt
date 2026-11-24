@@ -1,4 +1,5 @@
-version|37
+version|38
+note|Battle picks now play the fight out turn by turn: sleep / freeze turns, paralysis, confusion, burn and poison damage, Leftovers, Sitrus/Oran berries, Focus Sash / Sturdy, Life Orb recoil and Choice locks - for you and for them.
 note|Dots prefer walking over swimming when a dry way is about as short, never step into empty black space, and the copied context now includes where the dots go. Battle picks also save nearly-empty moves when another move wins just as safely and they still have more Pokemon.
 note|Battle picks now check your whole bag (potions, Reborn snacks, status cures, revives like Cotton Candy) and only suggest a plan that actually wins the race - counting speed and their best hit. No more healing when you'd go down anyway.
 note|The helper now shows the walkthrough (wiki) step for where you are, matched to your game's own switches. Where the dots can't solve a puzzle yet, the step text tells you exactly what to do.
