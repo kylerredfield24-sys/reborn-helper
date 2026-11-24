@@ -1,4 +1,4 @@
-RH_VERSION = 32   # bumped with every release (used by the auto-updater)
+RH_VERSION = 33   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -700,18 +700,18 @@ module RH
   end
 
   # search as if walking (you can always hop off the bike - tall grass blocks bikes)
-  def self.tile_path(goals)
+  def self.tile_path(goals, exact = false)
     bike = ($PokemonGlobal.bicycle rescue false)
     $PokemonGlobal.bicycle = false if bike
     $rh_tp_bike = bike
-    return rh_tile_path(goals)
+    return rh_tile_path(goals, exact)
   ensure
     back = bike && $rh_tp_bike     # (if you got off the bike meanwhile, leave it that way)
     $rh_tp_bike = nil
     $PokemonGlobal.bicycle = true if back
   end
 
-  def self.rh_tile_path(goals)
+  def self.rh_tile_path(goals, exact = false)
     return [] if goals.empty? || !$game_player
     gs = {}
     goals.each { |x, y| gs[[x, y]] = true }
@@ -737,7 +737,8 @@ module RH
       dirs.each do |d, dx, dy|
         ax = cx + dx
         ay = cy + dy
-        if gs[[ax, ay]] && !prev.key?([ax, ay])
+        # (a goal you talk to can be on a solid tile: being next to it counts - but not for a spot you must stand on)
+        if !exact && gs[[ax, ay]] && !prev.key?([ax, ay])
           prev[[ax, ay]] = [cx, cy]
           found = [ax, ay]
           break
@@ -1184,11 +1185,13 @@ module RH
   end
 
   def self.nav_compute(key, r, here)
+    $rh_exact_spot = false
     # another copy of this same place (the game swaps copies after story events): treat it as here
     twin = r && r[:map] != here && mapname(r[:map]) == mapname(here) && (model(r[:map]) rescue nil) &&
            model(r[:map])[:w] == $game_map.width && model(r[:map])[:h] == $game_map.height
     if twin
       # the game swaps versions of this place (e.g. water raised / lowered): go to the right version
+      $rh_exact_spot = r[:id].to_i == 0 && [1, 2].include?(r[:trig].to_i)
       res = route_to([r[:map]], spot_tiles(r))
       return res if !res[0].empty? && !res[1].to_s.start_with?("towards")
       # can't plan all the way: lead to whatever on this map switches you to another version (machine, lever...)
@@ -1201,13 +1204,16 @@ module RH
         res = [[], "you're in the right area"]
       elsif r[:map] == here
         gt = story_goal_tiles(r)
-        res = [tile_path(gt), "story spot"]
+        exact = r[:id].to_i == 0 && [1, 2].include?(r[:trig].to_i)    # a spot to stand on (e.g. below a panel)
+        res = [tile_path(gt, exact), "story spot"]
         res = [model_path(gt), "story spot"] if res[0].empty?
         if res[0].empty?   # can't walk there inside this map - go out and use another door
+          $rh_exact_spot = exact
           res = route_to([here], spot_tiles(r))
           res = [res[0], res[1] + " (the way around)"]
         end
       else
+        $rh_exact_spot = r[:id].to_i == 0 && [1, 2].include?(r[:trig].to_i)
         res = route_to([r[:map]], spot_tiles(r))
       end
     else
@@ -1874,9 +1880,33 @@ module RH
     end
     g0 = goals.find { |x, y| [x, y] == hit } || goals.find { |x, y| (x - hit[0]).abs + (y - hit[1]).abs == 1 }
     path << g0 if g0 && g0 != hit
+    # the map's picture can be wrong about heights (ledges, platforms, panels): check every single step
+    # with the game's own movement rules, and drop the line if you couldn't really walk it
+    return [] if !engine_walkable?(path)
     return fill_path(path)
   rescue
     return []
+  end
+
+  def self.engine_walkable?(path)
+    return true if !$game_map || path.length < 2 || path[0] != [$game_player.x, $game_player.y]
+    ev_cache if !$rh_evpos
+    mw = $game_map.width
+    mh = $game_map.height
+    surf = (can_surf? rescue false)
+    path.each_cons(2) do |a, b|
+      dx = b[0] - a[0]
+      dy = b[1] - a[1]
+      next if dx.abs + dy.abs != 1          # jumps / slides: checked when they were found
+      d = dy > 0 ? 2 : dy < 0 ? 8 : dx < 0 ? 4 : 6
+      next if step(a[0], a[1], d, dx, dy, mw, mh, surf) == b
+      # only a person standing there is fine (they move / you can talk them aside)
+      next if ($game_map.events || {}).values.any? { |e| e.x == b[0] && e.y == b[1] && !e.through && e.character_name.to_s != "" }
+      return false
+    end
+    return true
+  rescue
+    return true
   end
 
   def self.touch?(tiles, x, y)
@@ -2083,7 +2113,8 @@ module RH
             ok = false
             if dm && tx >= 0 && ty >= 0 && tx < dm[:w] && ty < dm[:h]
               lf = m_flood(dm, tx, ty)
-              ok = spot.any? { |x, y| touch?(lf[:tiles], x, y) }
+              # a spot you must stand on has to be inside the walkable area; a person / panel only needs you next to it
+              ok = spot.any? { |x, y| $rh_exact_spot ? lf[:tiles][[x, y]] : touch?(lf[:tiles], x, y) }
             end
           end
           if ok
