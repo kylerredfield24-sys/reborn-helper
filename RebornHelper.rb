@@ -1,4 +1,4 @@
-RH_VERSION = 31   # bumped with every release (used by the auto-updater)
+RH_VERSION = 32   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -46,7 +46,9 @@ module RH
              ["Sharp large", ["Verdana", "Tahoma", "Helvetica", "Arial"], 12, true, false],
              ["Bold large", ["Arial", "Helvetica", "Liberation Sans"], 13, true, true],
              # pixel-perfect: the game's own clean font at its native size (no blur when the window is scaled)
-             ["Crisp HD", ["Power Clear", "Power Green", "Pokemon Emerald"], 25, false, false, 16]]
+             ["Crisp HD", ["Power Clear", "Power Green", "Pokemon Emerald"], 25, false, false, 16],
+             # clean modern look (Poppins Medium, free font, installed in the game's Fonts folder), medium size, no shadow
+             ["Modern", ["Poppins", "Poppins Medium", "Arial"], 12, false, false, 15]]
 
   HEAL_ITEMS = {
     :POTION => 20, :FRESHWATER => 30, :BERRYJUICE => 20, :SODAPOP => 50,
@@ -3192,6 +3194,7 @@ end
 #==============================================================================
 module RH
   UPDATE_URL = "https://raw.githubusercontent.com/kylerredfield24-sys/reborn-helper/main/updates.txt"
+  FONT_URL   = "https://raw.githubusercontent.com/kylerredfield24-sys/reborn-helper/main/fonts/Poppins-Medium.ttf"
   MOD_URL    = "https://raw.githubusercontent.com/kylerredfield24-sys/reborn-helper/main/RebornHelper.rb"
 
   # self-update: if updates.txt says a newer version exists, download it and swap the file.
@@ -3218,11 +3221,21 @@ module RH
     $rh_updates ||= { :obj => [], :notes => [], :status => "not checked" }
   end
 
+  # the "Modern" font file; downloaded once if it isn't in the game's Fonts folder yet
+  def self.get_font
+    path = "Fonts/Poppins-Medium.ttf"
+    return if File.exist?(path) || !File.directory?("Fonts")
+    data = IO.popen(["/usr/bin/curl", "-fsSL", "--max-time", "10", FONT_URL], err: File::NULL) { |io| io.read }.to_s
+    File.open(path, "wb") { |f| f.write(data) } if data.length > 50_000 && data[0, 4] == "\x00\x01\x00\x00"
+  rescue
+  end
+
   # runs once while the game starts: if a newer helper is out, download it and load it straight away
   # (so one restart is all it takes). Gives up quietly after a few seconds if you're offline.
   def self.boot_update
     return if $rh_booted
     $rh_booted = true
+    get_font
     return if File.exist?("./patch/Mods/RebornHelper_settings.txt") && File.read("./patch/Mods/RebornHelper_settings.txt") =~ /^sync=false/
     txt = IO.popen(["/usr/bin/curl", "-fsSL", "--max-time", "4", UPDATE_URL], err: File::NULL) { |io| io.read }.to_s
     want = (txt[/^version\|(\d+)/, 1] || 0).to_i
@@ -3970,6 +3983,10 @@ module RH
       else
         RH.text(b, x0 + 12, H - 22, PW - 24, "Left/Right tabs   A select   B close", DIM)
       end
+      # helper version, small, bottom-right corner
+      b.font.size = [b.font.size - 3, 9].max
+      RH.text(b, x0 + 12, H - 12, PW - 20, "v#{RH_VERSION}", DIM, 2)
+      RH.font(b)
     end
 
     def run
