@@ -1,4 +1,5 @@
-version|36
+version|37
+note|Dots prefer walking over swimming when a dry way is about as short, never step into empty black space, and the copied context now includes where the dots go. Battle picks also save nearly-empty moves when another move wins just as safely and they still have more Pokemon.
 note|Battle picks now check your whole bag (potions, Reborn snacks, status cures, revives like Cotton Candy) and only suggest a plan that actually wins the race - counting speed and their best hit. No more healing when you'd go down anyway.
 note|The helper now shows the walkthrough (wiki) step for where you are, matched to your game's own switches. Where the dots can't solve a puzzle yet, the step text tells you exactly what to do.
 note|Panels and consoles that only work facing one way (like "face up") are now routed to the right side, and the dots never cut through ledges, rails or computers.

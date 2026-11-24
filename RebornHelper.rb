@@ -1,4 +1,4 @@
-RH_VERSION = 36   # bumped with every release (used by the auto-updater)
+RH_VERSION = 37   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -671,16 +671,26 @@ module RH
   end
 
   # steps from (x,y) going d: returns landing tile or nil (handles ledges + Surf)
+  # black empty space (no tile drawn on any layer and no tile-picture event): not walkable, whatever the engine says
+  def self.void?(x, y)
+    d = ($game_map.data rescue nil)
+    return false if !d
+    return false if [0, 1, 2].any? { |i| (d[x, y, i] rescue 0).to_i != 0 }
+    return false if ($game_map.events || {}).values.any? { |e| e.x == x && e.y == y && e.tile_id.to_i > 0 }
+    return true
+  end
+
   def self.step(x, y, d, dx, dy, mw, mh, surf)
     nx = x + dx
     ny = y + dy
     return nil if nx < 0 || ny < 0 || nx >= mw || ny >= mh
+    return nil if void?(nx, ny)
     if $rh_jumppos && (js = $rh_jumppos[[nx, ny]]) && (jd = js[d] || js[:any])   # jump pad / gap
       # a picture-less pad you can step onto moves you from the pad; otherwise you bump it and move from here
       on = js[:walkon] && ($game_player.passable?(x, y, d) rescue false)
       lx = (on ? nx : x) + jd[0]
       ly = (on ? ny : y) + jd[1]
-      return nil if lx < 0 || ly < 0 || lx >= mw || ly >= mh || blocked_by_event?(lx, ly)
+      return nil if lx < 0 || ly < 0 || lx >= mw || ly >= mh || blocked_by_event?(lx, ly) || void?(lx, ly)
       return [lx, ly] if ($game_map.passable?(lx, ly, 10 - d) rescue false) || ($game_map.passable?(lx, ly, d) rescue false)
       return nil
     end
@@ -699,7 +709,7 @@ module RH
         lx = nx + dx
         ly = ny + dy
         return nil if lx < 0 || ly < 0 || lx >= mw || ly >= mh
-        return nil if blocked_by_event?(lx, ly)
+        return nil if blocked_by_event?(lx, ly) || void?(lx, ly)
         return ($game_map.passable?(lx, ly, 0) rescue false) ? [lx, ly] : nil
       end
       return [nx, ny]
@@ -718,6 +728,19 @@ module RH
     bike = ($PokemonGlobal.bicycle rescue false)
     $PokemonGlobal.bicycle = false if bike
     $rh_tp_bike = bike
+    # walking beats surfing: if there's a dry way that isn't much longer, use it (no pointless swims)
+    surfing = ($PokemonGlobal.surfing rescue false)
+    if !surfing && can_surf?
+      begin
+        $rh_nosurf = true
+        dry = rh_tile_path(goals, exact)
+      ensure
+        $rh_nosurf = false
+      end
+      wet = rh_tile_path(goals, exact)
+      return dry if !dry.empty? && (wet.empty? || dry.length <= wet.length + 8)
+      return wet
+    end
     return rh_tile_path(goals, exact)
   ensure
     back = bike && $rh_tp_bike     # (if you got off the bike meanwhile, leave it that way)
@@ -740,7 +763,7 @@ module RH
       reach = goals.any? { |x, y| seen[[x, y]] || seen[[x + 1, y]] || seen[[x - 1, y]] || seen[[x, y + 1]] || seen[[x, y - 1]] }
       return [] if !reach   # can't get there from this area - skip the slow search
     end
-    surf = can_surf?
+    surf = can_surf? && !$rh_nosurf
     prev = { [sx, sy] => nil }
     q = [[sx, sy]]
     dirs = [[2, 0, 1], [4, -1, 0], [6, 1, 0], [8, 0, -1]]
@@ -1773,6 +1796,8 @@ module RH
       return true if pri[t] == 0
     end
     data = md[:data]
+    # empty black space outside the drawn room (no tile on any layer): never a place to walk
+    return false if !t && data[x, y, 0].to_i == 0 && data[x, y, 1].to_i == 0 && data[x, y, 2].to_i == 0
     [2, 1, 0].each do |i|
       tid = data[x, y, i]
       return false if tid.nil?
@@ -2650,6 +2675,9 @@ module RH
   # the most reliable winning move for this Pokemon vs this foe: [win chance, move name, hits needed, their hits needed]
   def self.best_race_move(battle, att, foe, my_hp, foe_hit, first)
     best = nil
+    bestkey = nil
+    # more of their team still to come? then don't burn a nearly-empty move if another one wins just as safely
+    left = ((battle.pbParty(foe.index) rescue []).count { |pk| pk && !(pk.isEgg? rescue false) && pk.hp > 0 } rescue 1)
     att.moves.each do |m|
       next if !m || !m.move || m.pp <= 0
       lo, hi = dmg(battle, att, foe, m)
@@ -2658,8 +2686,14 @@ module RH
       acc = (m.accuracy rescue 100).to_i
       acc = 100 if acc <= 0
       p = win ? (acc / 100.0) ** nk : 0.0
-      cand = [p, mname(m.move), nk, nf]
-      best = cand if !best || cand[0] > best[0] || (cand[0] == best[0] && cand[2] < best[2])
+      scarce = left > 1 && m.pp <= 2 ? 1 : 0
+      cand = [p, mname(m.move), nk, nf, m.pp]
+      # safest win first, then fewest turns (a near-empty move counts as one turn slower), then most PP left
+      key = [(p * 10).round, -(nk + scarce), m.pp]
+      if !best || (key <=> bestkey) > 0
+        best = cand
+        bestkey = key
+      end
     end
     return best
   end
@@ -4000,6 +4034,11 @@ module RH
     t << ""
     t << "Max Candies used: #{g[:candy] + old_candies_used}"
     t << ""
+    begin
+      np = (nav_path rescue nil)
+      t << "Helper dots: #{np ? np[0].first(40).map { |x, y| "#{x},#{y}" }.join(' ') : 'none'}  (you at #{$game_player.x},#{$game_player.y}, surfing #{($PokemonGlobal.surfing rescue false)})"
+    rescue
+    end
     t << "FULL STATE (for Claude's route tests)"
     begin
       sw = ($game_switches.instance_variable_get(:@data) || [])
