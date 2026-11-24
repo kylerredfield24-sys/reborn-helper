@@ -1,4 +1,5 @@
-version|39
+version|40
+note|Coral Water Grid (after the double battle with Titania): the goal now walks you through the rubbish-pile steps from the wiki, checked against the game - where the pile goes, when to raise / lower the water.
 note|Fixed: the dots no longer send you to the side of a computer/console that only works when you face it from below. If a panel can only be reached through the rubbish-pile puzzle, the dots stop and the goal text gives the wiki step instead.
 note|Battle picks now play the fight out turn by turn: sleep / freeze turns, paralysis, confusion, burn and poison damage, Leftovers, Sitrus/Oran berries, Focus Sash / Sturdy, Life Orb recoil and Choice locks - for you and for them.
 note|Dots prefer walking over swimming when a dry way is about as short, never step into empty black space, and the copied context now includes where the dots go. Battle picks also save nearly-empty moves when another move wins just as safely and they still have more Pokemon.
@@ -14,5 +15,14 @@ guide|v276=9&s585&!s546|0|0|0|Wiki step: Go back to Peridot Water Grid - the shu
 guide|v276=9&s546&v259>=2|0|0|0|Wiki step: In Peridot Water Grid, go back through the turnstile and lower the water at the water machine (stand below it, face up). That opens a set of stairs.
 guide|v276=9&s546|0|0|0|Wiki step: Take the stairs that opened in Peridot and follow them across to the next room where Titania is (Onyx Water Grid), then go down the stairs to the acolytes.
 guide|v276>=11&v276<=13|-1|0|0|Wiki step: Beat the acolytes for the cutscene about opening the door. Then go back through the upper-right door, up the stairs, and out the top-left door.
-guide|v276>=14&v276<=18|-1|0|0|Wiki step: You have the Beryl Grid Key - bring it back to Titania on the north side of Opal Water Grid so she can unlock the last room. (Getting there goes through the rubbish-pile part - the dots only show where a real path exists.)
+guide|v276=14&m486|486|4|4|Wiki step (Coral): Titania is stuck. Lower the water first (machine top-left: stand below it, face up), then move the rubbish pile into place.
+guide|v276=14&m472&e16=14,13|472|4|4|Wiki step (Coral): The pile is in place. Raise the water at the machine in the top-left (stand below it, face up) - Titania jumps across.
+guide|v276=14&m472|0|0|0|Wiki step (Coral): Push the rubbish pile 1 right and 5 up from where it starts, to just up-right of Titania's island (use the little nook below it to hook it around the corner; you push from the floor, after taking the stairs down). Then raise the water at the top-left machine.
+guide|v276=14|0|0|0|Wiki step: Go back into Coral Water Grid with the water LOW - Titania is stuck on the island there and you move the rubbish pile for her.
+guide|v276>=15&v276<=16&m486|486|4|4|Wiki step (Coral): Lower the water again (top-left machine: stand below it, face up) - next the pile goes up by Titania's new spot.
+guide|v276>=15&v276<=16&m472&e16=7,12|472|4|4|Wiki step (Coral): The pile is in place. Raise the water at the top-left machine (stand below it, face up) - Titania jumps across and opens the shutter.
+guide|v276>=15&v276<=16|0|0|0|Wiki step (Coral): Push the rubbish pile up to 2 tiles straight below Titania (she now stands on the left side), then raise the water at the top-left machine so she can jump across.
+guide|v276=17|-1|0|0|Wiki step (Coral): Titania is crossing - let the scene play.
+guide|v276=18&m486|486|4|4|Wiki step (Coral): Lower the water one last time (top-left machine: stand below it, face up) - that opens the stairs to the next room.
+guide|v276=18|-1|0|0|Wiki step (Coral): Take the stairs that opened up into the next room.
 guide|v276>=23&v276<=24|0|0|0|Wiki step: The water system works again. Go into every room and raise the water until it's clean blue water (Surf where needed) - the map in the central room shows which wards still need it. Then go back to the Beryl room.

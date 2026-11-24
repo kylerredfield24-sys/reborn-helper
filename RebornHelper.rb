@@ -1,4 +1,4 @@
-RH_VERSION = 39   # bumped with every release (used by the auto-updater)
+RH_VERSION = 40   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -3699,6 +3699,11 @@ module RH
     c.split("&").all? do |t|
       if t =~ /\A(!?)s(\d+)\z/
         sw?($2.to_i) == ($1 != "!")
+      elsif t =~ /\A(!?)m(\d+)\z/                     # you're on this map
+        (($game_map.map_id rescue 0) == $2.to_i) == ($1 != "!")
+      elsif t =~ /\A(!?)e(\d+)=(\d+),(\d+)\z/        # an event on this map (e.g. a rubbish pile) is at x,y
+        ev = ($game_map.events[$2.to_i] rescue nil)
+        (ev && ev.x == $3.to_i && ev.y == $4.to_i ? true : false) == ($1 != "!")
       elsif t =~ /\A([vb])(\d*)(>=|<=|!=|=|>|<)(-?\d+)\z/
         cur = $1 == "b" ? ($Trainer.numbadges rescue 0) : (($game_variables[$2.to_i] rescue 0).to_i)
         n = $4.to_i
