@@ -1,4 +1,4 @@
-RH_VERSION = 23   # bumped with every release (used by the auto-updater)
+RH_VERSION = 24   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -970,8 +970,10 @@ module RH
   # smart plan first (real map data), then the simple map graph as a backup
   def self.route_to(targets, spot = nil)
     sure_no = true     # every search finished and found no way at all
+    nearest = nil
     [false, true, :people].each do |relax|
       pl = (plan(targets, spot, relax) rescue nil)
+      nearest ||= $rh_near if !pl
       sure_no = false if pl.nil?
       next if !pl
       path = tile_path(pl[1])
@@ -999,6 +1001,15 @@ module RH
         return res if res && !res[0].empty? && res[1] !~ /\Atowards /
       end
     end
+    # can't reach the exact spot yet (puzzle parts the helper doesn't model): walk to the closest point it CAN reach
+    if nearest
+      pl, near_map = nearest
+      path = tile_path(pl[1])
+      path = model_path(pl[1]) if path.empty?
+      if !path.empty?
+        return [path, "towards #{mapname(targets.first)} - first to #{mapname(near_map)}, the closest point the dots can reach"]
+      end
+    end
     # double-check once with everything rebuilt fresh before ever saying "no way"
     if sure_no && !$rh_retry
       $rh_retry = true
@@ -1015,16 +1026,8 @@ module RH
     end
     # the full search looked everywhere: don't send you wandering, say so (and the goal gets re-picked)
     if sure_no
-      # the planner can't see the whole way (puzzle mechanics it doesn't model yet):
-      # still head the right direction by the map network, avoiding places you keep bouncing between
-      hop = next_hop($game_map.map_id, targets)
-      bounced = ($rh_hist || []).tally.select { |m, n| n >= 2 }.keys
-      if hop && !bounced.include?(hop)
-        path = tile_path(goal_tiles(hop))
-        path = model_path(goal_tiles(hop)) if path.empty?
-        return [path, "towards #{mapname(targets.first)} via #{mapname(hop)}"] if !path.empty?
-      end
-      return [[], "follow the step above - the way there goes through a puzzle part the dots can't draw yet"]
+      # you're already at the closest point the dots can reach: the rest is a puzzle part - the step text says what to do
+      return [[], "follow the step above - the rest is a puzzle part the dots can't draw yet"]
     end
     bounced = ($rh_hist || []).tally.select { |m, n| n >= 2 }.keys
     hop = next_hop($game_map.map_id, targets)
@@ -1302,6 +1305,13 @@ module RH
     hm_ok?(:STRENGTH, (BADGEFORSTRENGTH rescue 5))
   end
 
+  # blocks that slide away when you push them (the event moves "away from player")
+  def self.push_block?(list)
+    (list || []).any? { |q| q.code == 209 && q.parameters[0] == 0 && (q.parameters[1].list rescue []).any? { |mc| mc.code == 11 } }
+  rescue
+    false
+  end
+
   def self.boulder?(list)
     s = ""
     (list || []).each { |c| s << c.parameters.last.to_s << ";" if [355, 655, 111].include?(c.code) }
@@ -1324,10 +1334,23 @@ module RH
       elsif q.code == 209 && q.parameters[0] == -1
         dir = nil
         facing.each { |ind, dd| dir = dd if ind < q.indent }
+        # add up every step / jump the event makes you take
+        mv = { 1 => [0, 1], 2 => [-1, 0], 3 => [1, 0], 4 => [0, -1], 5 => [-1, 1], 6 => [1, 1], 7 => [-1, -1], 8 => [1, -1] }
+        tx = 0
+        ty = 0
+        moved = false
         (q.parameters[1].list rescue []).each do |mc|
-          next if mc.code != 14
-          spec[dir || :any] = [mc.parameters[0], mc.parameters[1]]
+          if mc.code == 14
+            tx += mc.parameters[0]
+            ty += mc.parameters[1]
+            moved = true
+          elsif mv[mc.code]
+            tx += mv[mc.code][0]
+            ty += mv[mc.code][1]
+            moved = true
+          end
         end
+        spec[dir || :any] = [tx, ty] if moved && (tx != 0 || ty != 0)
       end
     end
     $rh_jspec[list] = spec.empty? ? nil : spec
@@ -1348,7 +1371,7 @@ module RH
     elsif charname.to_s != "" && !clearable?(list)
       # last try: only people who actually walk around get ignored - rocks, signs, guards and objects stay solid
       return if @rh_relax == :people && moves
-      if boulder?(list) && (can_strength? || @rh_relax)   # relaxed search: assume boulders can be moved
+      if (boulder?(list) && (can_strength? || @rh_relax)) || push_block?(list)   # relaxed search: assume boulders can be moved
         md[:boulder][[x, y]] = true
       else
         md[:block][[x, y]] = true
@@ -1966,6 +1989,8 @@ module RH
     open = [[dist[here] || 99, 0, st0]]
     floods = 0
     found = nil
+    near = nil
+    variants = {}
     t0 = Time.now
     until open.empty?
       slice!
@@ -1976,6 +2001,9 @@ module RH
       end
       open.sort_by! { |a| [a[0] + a[1], a[1]] }
       _, g0, cur = open.shift
+      # remember the reachable place that gets closest to the goal (used if the goal itself can't be reached)
+      bd = dist[cur[0]] || 99
+      near = [bd, g0, cur] if cur != st0 && (!near || bd < near[0] || (bd == near[0] && g0 < near[1]))
       cm, cf, cov = cur
       @rh_ov = cov
       cmd = get.call(cm)
@@ -2016,6 +2044,10 @@ module RH
         end
         st = [to, nf[:id], nov]
         next if prev.key?(st)
+        # the same area with lots of different "what-ifs" is almost always a repeat: keep only a few
+        vk = [to, nf[:id]]
+        variants[vk] = (variants[vk] || 0) + 1
+        next if variants[vk] > 4
         prev[st] = cur
         first[st] = (cur == st0) ? [to, tiles, kind] : first[cur]
         open << [dist[to] || (kind == :walk ? 8 : 1), g0 + 1, st]
@@ -2023,6 +2055,11 @@ module RH
       break if found || floods > MAX_FLOODS
     end
     res = (floods > MAX_FLOODS) ? nil : false   # false = searched everything, no walkable way
+    # closest reachable point toward the goal (only if it's actually closer than where you are now)
+    $rh_near = nil
+    if !found && near && near[0] < (dist[here] || 99) && first[near[2]]
+      $rh_near = [first[near[2]], near[2][0]]
+    end
     if found
       cur, to, tiles, kind = found
       res = (cur == st0) ? [to, tiles, kind] : first[cur]
