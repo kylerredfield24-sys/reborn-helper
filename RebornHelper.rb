@@ -1,4 +1,4 @@
-RH_VERSION = 29   # bumped with every release (used by the auto-updater)
+RH_VERSION = 30   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -2373,7 +2373,9 @@ module RH
     v = versions_of(id)
     return "" if !v
     # checked against the map tiles: 0 = puddles (start), 1 = drained dry, 2 = full of dirty sludge, 3 = full of clean water
-    return [" (starting water level - puddles)", " (drained dry)", " (filled with dirty water)", " (filled with clean water)"][v[1]].to_s if mapname(id).to_s =~ /Water Grid/
+    # (the grids are rooms under the Water Treatment Center, not the Reborn City wards with the same names)
+    return [" (inside the Water Treatment Center - starting water level, puddles)", " (inside the Water Treatment Center - drained dry)",
+            " (inside the Water Treatment Center - filled with dirty water)", " (inside the Water Treatment Center - filled with clean water)"][v[1]].to_s if mapname(id).to_s =~ /Water Grid/
     return " (version #{v[1] + 1} of #{v[0].length})"
   end
 

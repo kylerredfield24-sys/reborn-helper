@@ -1,4 +1,5 @@
-version|29
+version|30
+note|"Onyx Water Grid" and the other Water Grids are rooms inside the Water Treatment Center (not Reborn City). The goal text now says so.
 note|Updates now load the same time you start the game - one restart is enough.
 note|Route tab: 'Remember this spot', then 'Lead me back' gets dots back to it (through doors, water levels and switches).
 note|Stairs and jump pads in puzzle areas are read correctly now, so the dots stop dead-ending there.
