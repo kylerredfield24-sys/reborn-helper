@@ -1,4 +1,4 @@
-RH_VERSION = 27   # bumped with every release (used by the auto-updater)
+RH_VERSION = 28   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -721,7 +721,7 @@ module RH
     found = nil
     until q.empty?
       cx, cy = q.shift
-      slice! if (prev.size & 255) == 0
+      slice!
       dirs.each do |d, dx, dy|
         ax = cx + dx
         ay = cy + dy
@@ -932,10 +932,11 @@ module RH
     return nil if !best
     if best[0] > 1
       # off the line: find a real way back to it using the game's own walls (never draw through rocks)
-      if $game_player.moving? && best[0] <= 3
-        return [path[best[1]..-1], label]      # just a step or two off while walking: no search needed
+      if $game_player.moving?
+        # moving (walking / biking): no search mid-step, keeps the game smooth; the real link is found when you stop
+        return best[0] <= 60 ? [path[best[1]..-1], label] : nil
       end
-      rj = rejoin(path, label, $game_player.moving? ? 150 : 900)
+      rj = rejoin(path, label, 900)
       return rj if rj
       busy = $game_player.moving? || !$rh_still || $rh_still[0] != [px, py] || Graphics.frame_count - $rh_still[1] < 8
       return nil if !busy || best[0] > 60
@@ -1204,7 +1205,7 @@ module RH
   # inside the background search: hand control back to the game every ~12ms
   def self.slice!
     return if !$rh_in_fiber
-    return if Time.now - $rh_slice < 0.012
+    return if Time.now - $rh_slice < (($game_player.moving? rescue false) ? 0.004 : 0.012)
     rl = @rh_relax
     ro = @rh_ov
     @rh_ov = nil
@@ -1686,7 +1687,8 @@ module RH
 
   # where the live events stand on this map (if this changes, re-plan)
   def self.live_sig
-    ($game_map.events || {}).values.map { |e| [e.x, e.y, e.character_name.to_s.length, e.through ? 1 : 0] }.hash
+    ($game_map.events || {}).values.reject { |e| ((e.instance_variable_get(:@move_type) || 0) != 0) rescue false }
+                             .map { |e| [e.id, e.x, e.y, e.character_name.to_s.length, e.through ? 1 : 0] }.hash
   rescue
     0
   end
@@ -1794,7 +1796,7 @@ module RH
         q << n
       end
       break if seen.size > 25000
-      slice! if (seen.size & 1023) == 0
+      slice!
     end
     f = { :tiles => seen, :id => md[:floods].length }
     md[:floods] << f
@@ -1826,7 +1828,7 @@ module RH
         prev[n] = c
         q << n
       end
-      slice! if (prev.size & 511) == 0
+      slice!
       break if prev.size > 20000
     end
     return [] if !hit
@@ -3331,6 +3333,8 @@ module RH
     end
     tip = ((updates[:choice] || {})[[map_id, event_id]] rescue nil)
     tip ||= CHOICE_TIPS[[map_id, event_id]] || text_tip(said.join(" ")) || text_tip($rh_last_said.to_s)
+    # only story questions get the panel (elevators, shops, menus etc. stay clean)
+    return if !tip && !eff.any? { |e| e.include?("story moves on") }
     lines = []
     lines << [tip, GOOD] if tip
     opts.each_with_index do |o, i|
@@ -3350,10 +3354,8 @@ module RH
     mid = ($game_map.map_id rescue 0)
     tip = ((updates[:choice] || {})[[mid, ev]] rescue nil)
     tip ||= CHOICE_TIPS[[mid, ev]] || text_tip(message.to_s) || text_tip($rh_last_said.to_s)
-    lines = []
-    lines << [tip, GOOD] if tip
-    lines << ["No story effect known - either answer is fine.", DIM] if !tip
-    choice_draw(lines)
+    return if !tip      # not a known story question: no panel
+    choice_draw([[tip, GOOD]])
   end
 
   def self.choice_draw(items)
