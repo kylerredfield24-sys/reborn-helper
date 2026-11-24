@@ -1,4 +1,4 @@
-RH_VERSION = 38   # bumped with every release (used by the auto-updater)
+RH_VERSION = 39   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -1590,7 +1590,7 @@ module RH
       tr, eff = live_effects(pg.list, id, ev.id)
       eff = nil if eff.empty?
       # panels that only work while you face them a certain way (e.g. "face up") - remember which way
-      fd = need_face(pg.list)
+      fd = pg.trigger == 0 ? need_face(pg.list) : nil     # only buttons you press (A); stairs / pads are handled as moves
       (md[:face] ||= {})[[ev.x, ev.y]] = fd if fd && !pg.through
       tr.each do |cmd|
         md[:warps] << [ev.x, ev.y, cmd.parameters[1], cmd.parameters[2], cmd.parameters[3], nil, eff]

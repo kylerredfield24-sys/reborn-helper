@@ -1,4 +1,5 @@
-version|38
+version|39
+note|Fixed: the dots no longer send you to the side of a computer/console that only works when you face it from below. If a panel can only be reached through the rubbish-pile puzzle, the dots stop and the goal text gives the wiki step instead.
 note|Battle picks now play the fight out turn by turn: sleep / freeze turns, paralysis, confusion, burn and poison damage, Leftovers, Sitrus/Oran berries, Focus Sash / Sturdy, Life Orb recoil and Choice locks - for you and for them.
 note|Dots prefer walking over swimming when a dry way is about as short, never step into empty black space, and the copied context now includes where the dots go. Battle picks also save nearly-empty moves when another move wins just as safely and they still have more Pokemon.
 note|Battle picks now check your whole bag (potions, Reborn snacks, status cures, revives like Cotton Candy) and only suggest a plan that actually wins the race - counting speed and their best hit. No more healing when you'd go down anyway.
@@ -13,4 +14,5 @@ guide|v276=9&s585&!s546|0|0|0|Wiki step: Go back to Peridot Water Grid - the shu
 guide|v276=9&s546&v259>=2|0|0|0|Wiki step: In Peridot Water Grid, go back through the turnstile and lower the water at the water machine (stand below it, face up). That opens a set of stairs.
 guide|v276=9&s546|0|0|0|Wiki step: Take the stairs that opened in Peridot and follow them across to the next room where Titania is (Onyx Water Grid), then go down the stairs to the acolytes.
 guide|v276>=11&v276<=13|-1|0|0|Wiki step: Beat the acolytes for the cutscene about opening the door. Then go back through the upper-right door, up the stairs, and out the top-left door.
+guide|v276>=14&v276<=18|-1|0|0|Wiki step: You have the Beryl Grid Key - bring it back to Titania on the north side of Opal Water Grid so she can unlock the last room. (Getting there goes through the rubbish-pile part - the dots only show where a real path exists.)
 guide|v276>=23&v276<=24|0|0|0|Wiki step: The water system works again. Go into every room and raise the water until it's clean blue water (Surf where needed) - the map in the central room shows which wards still need it. Then go back to the Beryl room.
