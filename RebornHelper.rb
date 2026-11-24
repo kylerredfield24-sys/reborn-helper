@@ -1,4 +1,4 @@
-RH_VERSION = 25   # bumped with every release (used by the auto-updater)
+RH_VERSION = 26   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -980,7 +980,8 @@ module RH
       path = model_path(pl[1]) if path.empty?   # someone's standing in the way right now - still show the line
       next if path.empty?
       lbl = { :dive => "dark water - Dive (A)", :surface => "surface here (A)",
-              :lever => "#{mapname(pl[0])} - use the elevator panel / switch first" }[pl[2]] || mapname(pl[0])
+              :lever => "#{mapname(pl[0])} - use the elevator panel / switch first",
+              :toggle => "the switch / trigger marked here (it changes this place)" }[pl[2]] || mapname(pl[0])
       lbl += " (push the boulders)" if relax == true
       lbl += " (walk around / talk to people in the way)" if relax == :people
       return [path, lbl]
@@ -1503,6 +1504,8 @@ module RH
       tr.each do |cmd|
         md[:warps] << [ev.x, ev.y, cmd.parameters[1], cmd.parameters[2], cmd.parameters[3], nil, eff]
       end
+      # a switch / floor trigger that changes this same place (e.g. turns jump pads off, moves blocks)
+      (md[:toggles] ||= []) << [ev.x, ev.y, eff, pg.through] if tr.empty? && eff
       (pg.list || []).each do |cmd|
         if cmd.code == 117
           common_warps(cmd.parameters[0]).each { |to, x2, y2| md[:warps] << [ev.x, ev.y, to, x2, y2] }
@@ -1855,6 +1858,23 @@ module RH
       end
       out << [to, tx, ty, [[x, y]], lv ? :lever : :walk, eff] if touch?(f[:tiles], x, y)
     end
+    # using a switch / trigger here = same place, changed state (the search remembers the change)
+    (md[:toggles] || []).each do |x, y, eff, thr|
+      next if !touch?(f[:tiles], x, y)
+      js = md[:jumps][[x, y]]
+      [[0, 1, 8], [0, -1, 2], [1, 0, 4], [-1, 0, 6]].each do |dx, dy, d|   # where you stand, facing the trigger
+        ax = x + dx
+        ay = y + dy
+        next if !f[:tiles][[ax, ay]] && !(thr && f[:tiles][[x, y]])
+        lx, ly = (thr ? [x, y] : [ax, ay])
+        if js && (jd = js[d] || js[:any])
+          lx = ax + jd[0]
+          ly = ay + jd[1]
+        end
+        out << [md[:id], lx, ly, [[x, y]], :toggle, eff]
+        break
+      end
+    end
     w = md[:w]
     h = md[:h]
     connections(md[:id]).each do |to, ax, ay, bx, by|
@@ -2018,7 +2038,7 @@ module RH
         end
         nov = cov if nov.size > 24          # keep the what-ifs small
         @rh_ov = nov
-        if targets.include?(to)
+        if targets.include?(to) && kind != :toggle
           ok = true
           if spot
             dm = get.call(to)
