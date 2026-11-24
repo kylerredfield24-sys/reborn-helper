@@ -1,4 +1,5 @@
-version|42
+version|43
+note|Water Treatment map: a small map of all 9 water rooms shows in the top-left while you're there - blue = clean, brown = dirty, grey = low water, white frame = you, green frame = where to go, yellow dots = the way room to room.
 note|Choice help now shows the whole tip (no cut-off lines) and keeps it simple: what YES does, what NO does.
 note|Water clean-up: the helper now knows which rooms still have dirty water (from the game's own water levels), picks the nearest one and draws the dots to its water machine. It says how many rooms are left.
 note|Coral Water Grid (after the double battle with Titania): the goal now walks you through the rubbish-pile steps from the wiki, checked against the game - where the pile goes, when to raise / lower the water.

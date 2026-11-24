@@ -1,4 +1,4 @@
-RH_VERSION = 42   # bumped with every release (used by the auto-updater)
+RH_VERSION = 43   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -124,6 +124,69 @@ module RH
                 260 => [257, 261], 261 => [257, 260], 262 => [259], 263 => [259, 264], 264 => [263] }
 
   # after the clean-up starts: lead to the nearest room whose water isn't clean yet (level 3), and to its water machine
+  # small map of the Water Treatment rooms (top-left): water in each room, where you are, where to go, and the way there
+  WATER_LAYOUT = { 262 => [1, 0], 256 => [2, 0], 257 => [3, 0], 260 => [4, 0],
+                   263 => [0, 1], 259 => [1, 1], 258 => [2, 1], 261 => [4, 1], 264 => [0, 2] }
+  WATER_ABBR = { 256 => "N.Obs", 257 => "C.Obs", 258 => "Opal", 259 => "Perid", 260 => "Onyx", 261 => "Coral", 262 => "Lapis", 263 => "Jasp", 264 => "Beryl" }
+
+  def self.grid_of(map_id)
+    WATER_GRIDS.keys.find { |v| WATER_GRIDS[v][0].include?(map_id) }
+  end
+
+  def self.water_map_key
+    here = ($game_map.map_id rescue 0)
+    return nil if !grid_of(here) && ![467, 477, 478].include?(here)
+    tgt = nil
+    t = (cleanup_step rescue nil)
+    tmap = t ? t[:map] : (($rh_nav_cache[0][2] rescue nil) if $rh_nav_cache && $rh_nav_cache[0][1] == :story)
+    chain = ($rh_plan_chain || []).map { |m| grid_of(m) }.compact.chunk_while { |a, b| a == b }.map(&:first)
+    return [here, WATER_GRIDS.keys.map { |v| var(v) }, grid_of(tmap.to_i), chain]
+  end
+
+  def self.draw_water_map(b, k)
+    here, levels, tgrid, chain = k
+    cur = grid_of(here)
+    bw = 30
+    bh = 15
+    gap = 3
+    x0 = 6
+    y0 = 6
+    old = b.font.size
+    b.font.size = 9
+    pw = 5 * (bw + gap) + 6
+    ph = 3 * (bh + gap) + 18
+    b.fill_rect(x0 - 4, y0 - 4, pw, ph, BG)
+    cols = [Color.new(120, 120, 120), Color.new(175, 145, 95), Color.new(125, 95, 45), Color.new(70, 135, 225)]
+    ctr = {}
+    WATER_LAYOUT.each do |v, (cx, cy)|
+      x = x0 + cx * (bw + gap)
+      y = y0 + cy * (bh + gap)
+      h = v == 257 ? bh : bh                                # (all rooms the same size on this little map)
+      ctr[v] = [x + bw / 2, y + h / 2]
+      lv = levels[WATER_GRIDS.keys.index(v)].to_i.clamp(0, 3)
+      if v == tgrid
+        b.fill_rect(x - 2, y - 2, bw + 4, h + 4, GOOD)       # where to go: green frame
+      end
+      if v == cur
+        b.fill_rect(x - 1, y - 1, bw + 2, h + 2, Color.new(255, 255, 255))   # you: white frame
+      end
+      b.fill_rect(x, y, bw, h, cols[lv])
+      b.font.color = Color.new(255, 255, 255)
+      b.draw_text(x, y, bw, h, WATER_ABBR[v], 1)
+    end
+    # the way there, room to room
+    (chain || []).each_cons(2) do |a, c|
+      next if !ctr[a] || !ctr[c]
+      (ax, ay), (cx2, cy2) = ctr[a], ctr[c]
+      steps = [(cx2 - ax).abs, (cy2 - ay).abs].max
+      next if steps <= 0
+      0.step(steps, 2) { |i| b.fill_rect(ax + (cx2 - ax) * i / steps - 1, ay + (cy2 - ay) * i / steps - 1, 2, 2, Color.new(255, 230, 120)) }
+    end
+    b.font.color = DIM
+    b.draw_text(x0, y0 + 3 * (bh + gap) - 2, pw, 12, "blue clean  brown dirty  grey low", 0)
+    b.font.size = old
+  end
+
   def self.cleanup_step
     return nil if !sw?(548) || !var(276).between?(23, 25)
     dirty = WATER_GRIDS.keys.find_all { |v| var(v) != 3 }
@@ -4080,7 +4143,8 @@ module RH
     end
     obj = nil if !d[:hud]
     route = nil if !d[:hud]
-    key = [obj, route, d[:font]]
+    wkey = (d[:hud] ? (water_map_key rescue nil) : nil)
+    key = [obj, route, d[:font], wkey]
     if key != $rh_hud_key
       $rh_hud_key = key
       b = $rh_hud.bitmap
@@ -4090,6 +4154,7 @@ module RH
       lines += wrap(b, obj, 140).first(5).map { |l| [l, TXT] } if obj
       lines += wrap(b, route, 140).first(2).map { |l| [l, ACCENT] } if route
       lines << ["Update ready - restart game", GOOD] if (RH.updates[:selfupdate] rescue nil)
+      (draw_water_map(b, wkey) rescue nil) if wkey
       if !lines.empty?
         w = 152
         x0 = W - w - 4
