@@ -1,4 +1,4 @@
-RH_VERSION = 40   # bumped with every release (used by the auto-updater)
+RH_VERSION = 41   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -112,7 +112,49 @@ module RH
     ]
   end
 
+  # Water Treatment grids (read from the maps): level variable => [map for level 0, 1, 2, 3], water machine tile, name
+  WATER_GRIDS = {
+    256 => [[470, 479, 480, 497], [16, 9], "North Obsidia"], 257 => [[469, 481, 482, 498], [23, 14], "Central Obsidia"],
+    258 => [[473, 487, 488, 501], [12, 14], "Opal"],          259 => [[474, 489, 490, 502], [23, 18], "Peridot"],
+    260 => [[471, 483, 484, 499], [19, 11], "Onyx"],          261 => [[472, 485, 486, 500], [4, 3], "Coral"],
+    262 => [[468, 491, 492, 503], [15, 4], "Lapis"],          263 => [[475, 493, 494, 504], [16, 4], "Jasper"],
+    264 => [[476, 495, 496, 505], [21, 17], "Beryl"]
+  }
+  GRID_NEXT = { 256 => [259, 257, 258], 257 => [256, 260, 261, 258], 258 => [256, 257, 259], 259 => [256, 258, 262, 263],
+                260 => [257, 261], 261 => [257, 260], 262 => [259], 263 => [259, 264], 264 => [263] }
+
+  # after the clean-up starts: lead to the nearest room whose water isn't clean yet (level 3), and to its water machine
+  def self.cleanup_step
+    return nil if !sw?(548) || !var(276).between?(23, 25)
+    dirty = WATER_GRIDS.keys.find_all { |v| var(v) != 3 }
+    return nil if dirty.empty?
+    here = ($game_map.map_id rescue 0)
+    cur = WATER_GRIDS.keys.find { |v| WATER_GRIDS[v][0].include?(here) }
+    pick = nil
+    if cur
+      seen = { cur => true }
+      q = [cur]
+      until q.empty?
+        v = q.shift
+        if dirty.include?(v)
+          pick = v
+          break
+        end
+        (GRID_NEXT[v] || []).each { |n| next if seen[n]; seen[n] = true; q << n }
+      end
+    end
+    pick ||= dirty.first
+    maps, (mx, my), name = WATER_GRIDS[pick]
+    lv = var(pick)
+    left = dirty.map { |v| WATER_GRIDS[v][2] }.join(", ")
+    how = lv == 2 ? "press it twice: it drains first, then fills with clean water" : "it fills with clean water"
+    txt = "Clean-up (#{dirty.length} room#{dirty.length == 1 ? '' : 's'} left: #{left}). #{name}: use the water machine (stand below it, face up) - #{how}."
+    return { :text => txt, :map => maps[[[lv, 0].max, 3].min], :id => 0, :x => mx, :y => my + 1, :trig => 1, :to => -1 }
+  end
+
   def self.rule_step
+    cs = (cleanup_step rescue nil)
+    return cs if cs
     rules.each do |cond, txt, map, ev|
       ok = (cond.call rescue false)
       next if !ok
@@ -336,7 +378,7 @@ module RH
   end
 
   def self.objective
-    key = [STORY_VARS.map { |v| ($game_variables[v] rescue 0) }, ($Trainer.numbadges rescue 0), sw?(499), has_item?(:HM06), ((rule_step || {})[:text] rescue nil), ((guide_step || {})[:text] rescue nil), (g[:clues].first rescue nil), (updates[:obj].length rescue 0), ($game_map.map_id rescue 0),
+    key = [STORY_VARS.map { |v| ($game_variables[v] rescue 0) }, ($Trainer.numbadges rescue 0), sw?(499), has_item?(:HM06), ((rule_step || {})[:text] rescue nil), ((guide_step || {})[:text] rescue nil), ((cleanup_step || {})[:text] rescue nil), (g[:clues].first rescue nil), (updates[:obj].length rescue 0), ($game_map.map_id rescue 0),
            (pbMapInterpreterRunning? rescue false),
            ((lr = (live_step rescue nil)) ? [lr[:map], lr[:id], lr[:x], lr[:y]] : nil), ($game_player.x / 4 rescue 0), ($game_player.y / 4 rescue 0)]
     return $rh_obj[1] if $rh_obj && $rh_obj[0] == key
@@ -348,6 +390,8 @@ module RH
   def self.objective_uncached
     u = (update_obj rescue nil)
     return u[:text] if u
+    cs = (cleanup_step rescue nil)
+    return cs[:text] if cs
     gs = (guide_step rescue nil)
     return gs[:text] if gs
     rs = (rule_step rescue nil)
@@ -1150,6 +1194,7 @@ module RH
       r = { :map => u[:map], :id => 0, :x => u[:x], :y => u[:y], :to => u[:val] } if u && u[:map] > 0
       # walkthrough step: map > 0 = dots to that exact tile, 0 = no dots (puzzle part), -1 = keep the story dots
       gs = (guide_step rescue nil)
+      gs = nil if (cleanup_step rescue nil)        # the clean-up route (below) is more exact than the wiki line
       if gs && gs[:map] >= 0
         r = gs[:map] > 0 ? { :map => gs[:map], :id => 0, :x => gs[:x], :y => gs[:y], :trig => 1, :to => -1 } : { :map => 0, :id => 0, :x => 0, :y => 0, :to => -1 }
       end

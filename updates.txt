@@ -1,4 +1,5 @@
-version|40
+version|41
+note|Water clean-up: the helper now knows which rooms still have dirty water (from the game's own water levels), picks the nearest one and draws the dots to its water machine. It says how many rooms are left.
 note|Coral Water Grid (after the double battle with Titania): the goal now walks you through the rubbish-pile steps from the wiki, checked against the game - where the pile goes, when to raise / lower the water.
 note|Fixed: the dots no longer send you to the side of a computer/console that only works when you face it from below. If a panel can only be reached through the rubbish-pile puzzle, the dots stop and the goal text gives the wiki step instead.
 note|Battle picks now play the fight out turn by turn: sleep / freeze turns, paralysis, confusion, burn and poison damage, Leftovers, Sitrus/Oran berries, Focus Sash / Sturdy, Life Orb recoil and Choice locks - for you and for them.
@@ -25,4 +26,3 @@ guide|v276>=15&v276<=16|0|0|0|Wiki step (Coral): Push the rubbish pile up to 2 t
 guide|v276=17|-1|0|0|Wiki step (Coral): Titania is crossing - let the scene play.
 guide|v276=18&m486|486|4|4|Wiki step (Coral): Lower the water one last time (top-left machine: stand below it, face up) - that opens the stairs to the next room.
 guide|v276=18|-1|0|0|Wiki step (Coral): Take the stairs that opened up into the next room.
-guide|v276>=23&v276<=24|0|0|0|Wiki step: The water system works again. Go into every room and raise the water until it's clean blue water (Surf where needed) - the map in the central room shows which wards still need it. Then go back to the Beryl room.
