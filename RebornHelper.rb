@@ -1,4 +1,4 @@
-RH_VERSION = 24   # bumped with every release (used by the auto-updater)
+RH_VERSION = 25   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -3133,14 +3133,17 @@ module RH
   # The new version is used the next time you start the game.
   def self.self_update(want)
     return if want <= RH_VERSION
-    path = ["./patch/Mods/RebornHelper.rb", "patch/Mods/RebornHelper.rb"].find { |f| File.exist?(f) }
-    return if !path
+    # the installed copy may be named "RebornHelper (1).rb" etc. (browser downloads): find it, then save as RebornHelper.rb
+    dir = ["./patch/Mods", "patch/Mods"].find { |d| File.directory?(d) }
+    return if !dir
+    cur = Dir[File.join(dir, "RebornHelper*.rb")].reject { |f| f =~ /settings|errors/i }
+    path = File.join(dir, "RebornHelper.rb")
     code = IO.popen(["/usr/bin/curl", "-fsSL", "--max-time", "20", MOD_URL], err: File::NULL) { |io| io.read }.to_s
     # only accept a complete Reborn Helper file of the promised version
     return if code.length < 50_000 || !code.include?("module RH") || !code.include?("RH_VERSION = #{want}") || !code.include?("RH_VARMAP_DATA")
     tmp = path + ".new"
     File.open(tmp, "wb") { |f| f.write(code) }
-    File.rename(path, path + ".old") rescue nil
+    cur.each { |f| File.rename(f, f + ".old") rescue nil }   # ".old" isn't loaded by the game
     File.rename(tmp, path)
     updates[:selfupdate] = want
   rescue
