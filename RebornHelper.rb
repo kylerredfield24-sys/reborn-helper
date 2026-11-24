@@ -1,4 +1,4 @@
-RH_VERSION = 41   # bumped with every release (used by the auto-updater)
+RH_VERSION = 42   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -3784,7 +3784,7 @@ module RH
   CHOICE_TIPS = {
     [457, 9]   => "Pick NO every time (it asks 3 times). Keep the Ring - needed for the best (postgame) route. Refusing all 3: +2 Cal, +1 Anna, +1 Shade.",
     [873, 4]   => "YES - take Cal's ride down (saying no: -1 Cal).",
-    [478, 10]  => "Big choice: this picks your story route. YES (fight Taka): Zekrom route, +2 Taka +1 Ace -1 Titania. NO: Reshiram route, +1 Anna +1 Shade -2 Taka. Both are full routes.",
+    [478, 10]  => "YES = fight Taka now: Zekrom route.\nNO = don't fight: Reshiram route.\nBoth routes finish the game.",
     [694, 1]   => "'Keep winning?' -> NO (+1 Taka). 'Can I come with you?' -> YES: needed for the postgame route (no = -3 Taka).",
     [693, 18]  => "YES = +1 Taka.",
     [414, 111] => "YES = +1 Amaria (no = -1).",
@@ -3911,7 +3911,9 @@ module RH
     b = Bitmap.new(w + 12, 40)
     font(b)
     lines = [["Choice help", ACCENT]]
-    items.each { |t, col| wrap(b, t.to_s, w).first(4).each { |l| lines << [l, col] } }
+    # every line shown in full (one line per YES / NO when the tip has them)
+    items.each { |t, col| t.to_s.split("\n").each { |part| wrap(b, part, w).each { |l| lines << [l, col] } } }
+    lines = lines.first(12)
     b.dispose
     h = lines.length * RH.lh + 8
     choice_hide

@@ -1,4 +1,5 @@
-version|41
+version|42
+note|Choice help now shows the whole tip (no cut-off lines) and keeps it simple: what YES does, what NO does.
 note|Water clean-up: the helper now knows which rooms still have dirty water (from the game's own water levels), picks the nearest one and draws the dots to its water machine. It says how many rooms are left.
 note|Coral Water Grid (after the double battle with Titania): the goal now walks you through the rubbish-pile steps from the wiki, checked against the game - where the pile goes, when to raise / lower the water.
 note|Fixed: the dots no longer send you to the side of a computer/console that only works when you face it from below. If a panel can only be reached through the rubbish-pile puzzle, the dots stop and the goal text gives the wiki step instead.
