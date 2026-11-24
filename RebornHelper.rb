@@ -1,4 +1,4 @@
-RH_VERSION = 26   # bumped with every release (used by the auto-updater)
+RH_VERSION = 27   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -2344,7 +2344,8 @@ module RH
   def self.version_text(id)
     v = versions_of(id)
     return "" if !v
-    return (v[1] <= 1 ? " with the water RAISED" : " with the water LOWERED") if mapname(id).to_s =~ /Water Grid/
+    # checked against the map tiles: 0 = puddles (start), 1 = drained dry, 2 = full of dirty sludge, 3 = full of clean water
+    return [" (starting water level - puddles)", " (drained dry)", " (filled with dirty water)", " (filled with clean water)"][v[1]].to_s if mapname(id).to_s =~ /Water Grid/
     return " (version #{v[1] + 1} of #{v[0].length})"
   end
 
