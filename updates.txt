@@ -1,4 +1,7 @@
-version|48
+version|49
+note|Gym & story battles: the helper now ALWAYS speaks up first - it lists their team with held items and who will Mega Evolve, then either offers a better team from your PC or (if yours is already best) offers the best lead.
+note|Battle numbers now use a foe's Mega form when it's about to Mega Evolve (e.g. Ciel's Altaria), and never promise a one-hit KO on a full-HP Focus Sash / Sturdy foe.
+note|Summary screen: a Pokemon holding nothing shows "Try: <item>" - the best item for it from your bag.
 note|Before every gym battle and story (cutscene) battle, the helper checks your party AND your PC boxes against the enemy team. If a clearly better team exists it asks: Keep my team / Switch team (shows who goes in and out). Switching also puts the best answer to their first Pokemon in front. After the fight it offers to put your old team back.
 note|Clearer route line: when the dots stop on a spot in the same area (stairs/door that moves you, a switch), it now says what to do - e.g. "step onto the marked spot - it takes you through on the way to Big Top" - instead of "switch / trigger".
 note|Story transitions: whenever the story sends you to your next gym (any gym, rest of the game), the goal starts with GYM NEXT - leader (badge #). Right now: Ciel, at the Big Top.

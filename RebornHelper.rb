@@ -1,4 +1,4 @@
-RH_VERSION = 48   # bumped with every release (used by the auto-updater)
+RH_VERSION = 49   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -3284,6 +3284,37 @@ module RH
   end
 
   # analysis for one of your battlers
+  MULTI_HIT = [:ROCKBLAST, :BULLETSEED, :ICICLESPEAR, :PINMISSILE, :TAILSLAP, :DOUBLEHIT, :DUALCHOP, :BONEMERANG,
+    :DOUBLEKICK, :WATERSHURIKEN, :SCALESHOT, :ARMTHRUST, :FURYSWIPES, :FURYATTACK, :COMETPUNCH, :BONERUSH, :DRAGONDARTS,
+    :TRIPLEAXEL, :TRIPLEKICK, :SURGINGSTRIKES, :TWINEEDLE, :GEARGRIND, :DOUBLESLAP, :SPIKECANNON, :BARRAGE,
+    :POPULATIONBOMB, :DUALWINGBEAT, :DOUBLEIRONBASH]
+
+  # Focus Sash / Sturdy at full HP: one hit can't take it out (multi-hit moves still can)
+  def self.survives_one?(f, move)
+    return false if MULTI_HIT.include?(move)
+    return false if (f.hp rescue 0).to_i < (f.totalhp rescue 1).to_i
+    return true if (f.item rescue nil) == :FOCUSSASH
+    return true if (f.ability rescue nil) == :STURDY
+    false
+  end
+
+  # the foe's Mega form if it will Mega Evolve before it moves (trainers always have a Mega Ring)
+  def self.mega_fake(battle, f)
+    return nil if !(battle.pbCanMegaEvolve?(f.index) rescue false)
+    return nil if (f.isMega? rescue true)
+    key = [f.pokemon.object_id, f.hp, (battle.turncount rescue 0)]
+    $rh_megacache = {} if !$rh_megacache || $rh_megacache.size > 20
+    return $rh_megacache[key] if $rh_megacache.key?(key)
+    pk = f.pokemon.clone
+    pk.makeMega
+    fb = battle.ai.pbMakeFakeBattler(pk, f.pokemonIndex, false, f.index)
+    (fb.hp = f.hp) rescue nil
+    $rh_megacache[key] = fb
+    return fb
+  rescue
+    nil
+  end
+
   def self.analyze(battle, idx)
     me = battle.battlers[idx]
     return nil if !me || me.hp <= 0
@@ -3292,6 +3323,8 @@ module RH
     rows = []
     best = nil
     perfoe = {}
+    megas = {}
+    fs.each { |f| (mf = mega_fake(battle, f)) && megas[f] = mf }
     me.moves.each do |m|
       next if !m || !m.move
       row = { :name => mname(m.move), :pp => m.pp, :vs => [], :acc => (m.accuracy rescue 0) }
@@ -3302,7 +3335,12 @@ module RH
         row[:ally] = [ally, alo, ahi] if ahi > 0
       end
       fs.each do |f|
-        lo, hi = dmg(battle, me, f, m)
+        lo, hi = dmg(battle, me, megas[f] || f, m)
+        if survives_one?(f, m.move) && hi >= f.hp
+          lo = [lo, f.hp - 1].min
+          hi = f.hp - 1
+          row[:sash] = true
+        end
         row[:vs] << [f, lo, hi]
         next if hi <= 0 || m.pp <= 0
         ko = lo >= f.hp ? 2 : (hi >= f.hp ? 1 : 0)
@@ -3320,13 +3358,14 @@ module RH
     end
     danger = nil
     fs.each do |f|
+      ff = megas[f] || f
       f.moves.each do |m|
         next if !m || !m.move
-        lo, hi = dmg(battle, f, me, m)
+        lo, hi = dmg(battle, ff, me, m)
         danger = [hi, lo, f, m] if hi > 0 && (!danger || hi > danger[0])
       end
     end
-    return { :me => me, :foes => fs, :rows => rows, :best => best, :danger => danger, :perfoe => perfoe }
+    return { :me => me, :foes => fs, :rows => rows, :best => best, :danger => danger, :perfoe => perfoe, :megas => megas.keys }
   end
 
   RECOIL = { :BRAVEBIRD => 3, :FLAREBLITZ => 3, :WOODHAMMER => 3, :DOUBLEEDGE => 3, :VOLTTACKLE => 3,
@@ -3508,6 +3547,8 @@ module RH
         end
       end
       lines << ["", a[:foes].map { |f| short(f.name, 7) }.join("  "), DIM] if dbl
+      lines << ["Sash/Sturdy: it lives 1 hit at full HP", "", WARN] if a[:rows].any? { |r| r[:sash] }
+      (a[:megas] || []).each { |f| lines << ["#{short(f.name, 9)} will Mega Evolve - numbers use its Mega form", "", WARN] }
       if a[:danger]
         hi, lo, f, m = a[:danger]
         lines << ["Their best: " + mname(m.move), hi >= me.hp ? "KOs you" : "#{pct(hi, me.hp)}%", hi >= me.hp ? BAD : (hi * 2 >= me.hp ? WARN : DIM)]
@@ -3519,6 +3560,7 @@ module RH
       hp = "You #{pct(me.hp, me.totalhp)}%"
       a[:foes].each { |f| hp += "   #{short(f.name, 7)} #{pct(f.hp, f.totalhp)}%" }
       lines << [hp, "", TXT]
+      (a[:megas] || []).each { |f| lines << ["#{short(f.name, 9)} will Mega Evolve first (numbers use the Mega)", "", WARN] }
       if a[:danger]
         hi, lo, f, m = a[:danger]
         who = faster?(me, f, battle) ? "You're faster." : "#{short(f.name, 7)} is faster."
@@ -3912,15 +3954,49 @@ module RH
   end
 
   # ask once before a gym / story fight; default answer keeps your team. Returns true if it asked.
+  # one line per enemy: species, held item, MEGA if it will Mega Evolve
+  def self.foe_team_text(team)
+    team.map do |e|
+      t = (e.name rescue e.species.to_s)
+      itm = (e.item rescue nil)
+      it = (itm ? (getItemName(itm) rescue itm.to_s) : nil)
+      t += " (#{it})" if it
+      t += " - MEGA" if (e.hasMegaForm? rescue false)
+      t
+    end.join(", ")
+  end
+
+  # the best lead from your current party against their first Pokemon
+  def self.lead_offer(team)
+    mine = $Trainer.party.find_all { |p| p && !p.isEgg? && p.hp > 0 }
+    lead = mine.first
+    best = mine.max_by { |p| vs_score(p, team.first) }
+    return if !lead || !best
+    if best.equal?(lead)
+      Kernel.pbMessage(_INTL("Your team is already the best pick (party + PC). {1} leads - good vs {2}.", lead.name, team.first.name)) rescue nil
+      return
+    end
+    ch = (Kernel.pbMessage(_INTL("Your team is already the best pick (party + PC). Lead with {1} vs their {2}?", best.name, team.first.name),
+                           [_INTL("Keep {1} first", lead.name), _INTL("Lead with {1}", best.name)], 1) rescue 0)
+    if ch == 1
+      i = $Trainer.party.index(best)
+      j = $Trainer.party.index(lead)
+      $Trainer.party[i], $Trainer.party[j] = $Trainer.party[j], $Trainer.party[i] if i && j
+    end
+  end
+
   def self.team_switch_offer(team, name, kind)
     res = best_team(team)
     return false if !res
     pick, sc = res
+    Kernel.pbMessage(_INTL("{1} vs {2}. Their team: {3}.", kind, name, foe_team_text(team))) rescue nil
     mine = $Trainer.party.find_all { |p| p && !p.isEgg? && p.hp > 0 }
     bring = pick.find_all { |p, b, i| !b.nil? }
-    return false if bring.empty?
     newset = pick.map { |c| c[0] }
-    return false if team_value(newset, sc, team.length) < team_value(mine, sc, team.length) + 0.4   # not clearly better
+    if bring.empty? || team_value(newset, sc, team.length) < team_value(mine, sc, team.length) + 0.25
+      lead_offer(team)
+      return true
+    end
     out = mine.reject { |p| newset.include?(p) }.sort_by { |p| sc[p.object_id] ? sc[p.object_id].sum : -99 }
     pairs = []
     free = 6 - $Trainer.party.compact.length
@@ -3932,7 +4008,10 @@ module RH
         free -= 1
       end
     end
-    return false if pairs.empty?
+    if pairs.empty?
+      lead_offer(team)
+      return true
+    end
     ins = pairs.map { |o, c| c[0].name }.join(", ")
     outs = pairs.map { |o, c| o ? o.name : nil }.compact.join(", ")
     outs = "nobody (you have a free slot)" if outs.empty?
@@ -4040,6 +4119,125 @@ if Object.private_method_defined?(:pbDoubleTrainerBattle) && !Object.private_met
     ret = rh_pbDoubleTrainerBattle(id1, n1, p1, s1, id2, n2, p2, s2, *args, **kw)
     (RH.swap_back rescue nil)
     return ret
+  end
+end
+
+#==============================================================================
+# Summary screen: a Pokemon holding nothing gets a "Try: <item>" hint from YOUR bag
+#==============================================================================
+module RH
+  TYPE_BOOST = { :MYSTICWATER => :WATER, :SEAINCENSE => :WATER, :WAVEINCENSE => :WATER, :SPLASHPLATE => :WATER,
+    :CHARCOAL => :FIRE, :FLAMEPLATE => :FIRE, :MIRACLESEED => :GRASS, :ROSEINCENSE => :GRASS, :MEADOWPLATE => :GRASS,
+    :MAGNET => :ELECTRIC, :ZAPPLATE => :ELECTRIC, :NEVERMELTICE => :ICE, :ICICLEPLATE => :ICE,
+    :BLACKBELT => :FIGHTING, :FISTPLATE => :FIGHTING, :POISONBARB => :POISON, :TOXICPLATE => :POISON,
+    :SOFTSAND => :GROUND, :EARTHPLATE => :GROUND, :SHARPBEAK => :FLYING, :SKYPLATE => :FLYING,
+    :TWISTEDSPOON => :PSYCHIC, :ODDINCENSE => :PSYCHIC, :MINDPLATE => :PSYCHIC, :SILVERPOWDER => :BUG, :INSECTPLATE => :BUG,
+    :HARDSTONE => :ROCK, :ROCKINCENSE => :ROCK, :STONEPLATE => :ROCK, :SPELLTAG => :GHOST, :SPOOKYPLATE => :GHOST,
+    :DRAGONFANG => :DRAGON, :DRACOPLATE => :DRAGON, :BLACKGLASSES => :DARK, :DREADPLATE => :DARK,
+    :METALCOAT => :STEEL, :IRONPLATE => :STEEL, :SILKSCARF => :NORMAL, :PIXIEPLATE => :FAIRY, :FAIRYFEATHER => :FAIRY }
+  GEM_TYPE = { :FIREGEM => :FIRE, :WATERGEM => :WATER, :ELECTRICGEM => :ELECTRIC, :GRASSGEM => :GRASS, :ICEGEM => :ICE,
+    :FIGHTINGGEM => :FIGHTING, :POISONGEM => :POISON, :GROUNDGEM => :GROUND, :FLYINGGEM => :FLYING, :PSYCHICGEM => :PSYCHIC,
+    :BUGGEM => :BUG, :ROCKGEM => :ROCK, :GHOSTGEM => :GHOST, :DRAGONGEM => :DRAGON, :DARKGEM => :DARK, :STEELGEM => :STEEL,
+    :NORMALGEM => :NORMAL, :FAIRYGEM => :FAIRY }
+
+  # [score, why] for one item on one Pokemon (0 = not useful)
+  def self.hold_score(p, it)
+    mv = p.moves.find_all { |m| m && m.move }.map { |m| [m, ($cache.moves[m.move] rescue nil)] }.find_all { |m, d| d }
+    atk = mv.find_all { |m, d| d.basedamage.to_i > 1 }
+    types = [p.type1, p.type2].compact
+    main = atk.max_by { |m, d| d.basedamage.to_i * (types.include?(d.type) ? 1.5 : 1.0) * (d.accuracy.to_i > 0 ? d.accuracy.to_i / 100.0 : 1.0) }
+    phys = atk.count { |m, d| d.category == :physical }
+    spec = atk.count { |m, d| d.category == :special }
+    allatk = !mv.empty? && atk.length == mv.length
+    ab = (p.ability rescue nil)
+    weak_ground = types.inject(1.0) { |a, t| a * (PBTypes.oneTypeEff(:GROUND, t) / 2.0 rescue 1.0) }
+    nfe = (!pbGetEvolvedFormData(p.species, p).nil? rescue false)
+    if (t = TYPE_BOOST[it])
+      return [0, nil] if atk.none? { |m, d| d.type == t }
+      return main && main[1].type == t ? [2.0, "+20% #{mname(main[0].move)}"] : [1.0, "+20% #{t.to_s.capitalize} moves"]
+    end
+    if (t = GEM_TYPE[it])
+      return main && main[1].type == t ? [0.8, "+30% to one #{mname(main[0].move)}"] : [0, nil]
+    end
+    case it
+    when :EVIOLITE then return nfe ? [3.0, "+50% Def/SpDef (can still evolve)"] : [0, nil]
+    when :LEFTOVERS then return [1.7, "heals 1/16 HP every turn"]
+    when :BLACKSLUDGE then return types.include?(:POISON) ? [1.7, "heals 1/16 HP every turn"] : [0, nil]
+    when :LIFEORB then return atk.empty? ? [0, nil] : [1.8, "+30% damage, small HP cost"]
+    when :CHOICEBAND then return allatk && phys > spec ? [1.6, "+50% Attack (locks one move)"] : [0, nil]
+    when :CHOICESPECS then return allatk && spec > phys ? [1.6, "+50% Sp. Atk (locks one move)"] : [0, nil]
+    when :CHOICESCARF then return allatk ? [1.3, "+50% Speed (locks one move)"] : [0, nil]
+    when :ASSAULTVEST then return allatk ? [1.5, "+50% Sp. Def (attacks only)"] : [0, nil]
+    when :EXPERTBELT then return atk.length >= 2 ? [1.2, "+20% on super-effective hits"] : [0, nil]
+    when :MUSCLEBAND then return phys > spec ? [1.0, "+10% physical damage"] : [0, nil]
+    when :WISEGLASSES then return spec > phys ? [1.0, "+10% special damage"] : [0, nil]
+    when :AIRBALLOON
+      return [0, nil] if weak_ground <= 1.0 || ab == :LEVITATE
+      return weak_ground >= 4 ? [2.2, "Ground moves miss until hit (4x weak)"] : [0.7, "Ground moves miss until hit"]
+    when :WIDELENS, :ZOOMLENS
+      low = atk.find_all { |m, d| d.accuracy.to_i > 0 && d.accuracy.to_i < 90 }
+      return [0, nil] if low.empty?
+      return [low.any? { |m, d| d.accuracy.to_i <= 70 } ? 1.4 : 0.9, "better aim for #{mname(low[0][0].move)}"]
+    when :LIGHTCLAY then return mv.any? { |m, d| [:LIGHTSCREEN, :REFLECT, :AURORAVEIL].include?(m.move) } ? [1.0, "screens last 8 turns"] : [0, nil]
+    when :BIGROOT then return mv.any? { |m, d| [:GIGADRAIN, :DRAINPUNCH, :HORNLEECH, :LEECHLIFE, :DRAININGKISS, :OBLIVIONWING, :PARABOLICCHARGE, :LEECHSEED, :INGRAIN, :AQUARING].include?(m.move) } ? [0.9, "+30% healing from drain moves"] : [0, nil]
+    when :FLAMEORB then return ab == :GUTS || ab == :MARVELSCALE || ab == :FLAREBOOST ? [2.0, "turns on #{ab.to_s.capitalize}"] : [0, nil]
+    when :TOXICORB then return ab == :POISONHEAL || ab == :GUTS || ab == :TOXICBOOST ? [2.0, "turns on #{ab.to_s.capitalize}"] : [0, nil]
+    when :ROCKYHELMET then return p.defense > p.attack ? [0.8, "hurts things that hit it"] : [0, nil]
+    when :FOCUSSASH then return p.totalhp + p.defense + p.spdef < 520 ? [0.7, "lives one hit from full HP"] : [0, nil]
+    when :SCOPELENS then return atk.empty? ? [0, nil] : [0.6, "more critical hits"]
+    when :QUICKCLAW then return [0.5, "sometimes moves first"]
+    when :SHELLBELL then return atk.empty? ? [0, nil] : [0.6, "heals from damage dealt"]
+    when :SITRUSBERRY then return [0.9, "heals 1/4 HP once"]
+    when :LUMBERRY then return [0.8, "cures one status"]
+    end
+    return [0, nil]
+  end
+
+  # best item in your bag for this Pokemon: [item, why] or nil
+  def self.hold_suggestion(p)
+    return nil if !p || (p.isEgg? rescue true) || !$PokemonBag
+    $rh_holdmemo = {} if !$rh_holdmemo || $rh_holdmemo.size > 50
+    key = [p.object_id, p.species, p.moves.map { |m| m && m.move }, ($PokemonBag.pockets.flatten.length rescue 0)]
+    return $rh_holdmemo[key] if $rh_holdmemo.key?(key)
+    items = (TYPE_BOOST.keys + GEM_TYPE.keys + [:EVIOLITE, :LEFTOVERS, :BLACKSLUDGE, :LIFEORB, :CHOICEBAND, :CHOICESPECS,
+      :CHOICESCARF, :ASSAULTVEST, :EXPERTBELT, :MUSCLEBAND, :WISEGLASSES, :AIRBALLOON, :WIDELENS, :ZOOMLENS, :LIGHTCLAY,
+      :BIGROOT, :FLAMEORB, :TOXICORB, :ROCKYHELMET, :FOCUSSASH, :SCOPELENS, :QUICKCLAW, :SHELLBELL, :SITRUSBERRY, :LUMBERRY])
+    best = nil
+    items.each do |it|
+      next if bag_qty(it) <= 0
+      sc, why = hold_score(p, it)
+      best = [sc, it, why] if sc > 0 && (!best || sc > best[0])
+    end
+    $rh_holdmemo[key] = best ? [best[1], best[2]] : nil
+  rescue
+    nil
+  end
+
+  def self.draw_hold_hint(overlay, p)
+    return if !overlay || !p || (p.hasAnItem? rescue true)
+    s = hold_suggestion(p)
+    return if !s
+    old = overlay.font.size
+    overlay.font.size = 18
+    nm = (getItemName(s[0]) rescue s[0].to_s)
+    pbDrawTextPositions(overlay, [[_INTL("Try: {1}", nm), 78, 354, 0, Color.new(40, 150, 70), Color.new(200, 230, 200)]])
+    overlay.font.size = old
+  rescue
+    nil
+  end
+end
+
+class PokemonSummaryScene
+  [:drawPageOne, :drawAbilPage, :drawPageTwo].each do |mt|
+    next if !method_defined?(mt)
+    al = "rh_#{mt}".to_sym
+    next if method_defined?(al)
+    alias_method al, mt
+    define_method(mt) do |pokemon, *args|
+      r = send(al, pokemon, *args)
+      (RH.draw_hold_hint(@sprites["overlay"].bitmap, pokemon) rescue nil)
+      r
+    end
   end
 end
 
