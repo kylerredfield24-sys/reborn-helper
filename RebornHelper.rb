@@ -636,7 +636,8 @@ module RH
       js = (jump_spec(ev.list) rescue nil)
       next if !js
       # walk-on pads (no picture, e.g. stairs) move you from the pad itself; picture pads (rocks) are bumped
-      js = js.merge(:walkon => true) if ev.tile_id.to_i <= 0 && ev.character_name.to_s == ""
+      pas = ($game_map.instance_variable_get(:@passages) rescue nil)
+      js = js.merge(:walkon => true) if pad_walkon?(ev.tile_id, ev.character_name, pas)
       $rh_jumppos[[ev.x, ev.y]] = js
     end
     ($game_map.events || {}).each_value do |ev|
@@ -810,7 +811,8 @@ module RH
       lx = (on ? nx : x) + jd[0]
       ly = (on ? ny : y) + jd[1]
       return nil if lx < 0 || ly < 0 || lx >= mw || ly >= mh || blocked_by_event?(lx, ly) || void?(lx, ly)
-      return [lx, ly] if ($game_map.passable?(lx, ly, 10 - d) rescue false) || ($game_map.passable?(lx, ly, d) rescue false)
+      # the game's jump only needs the landing tile not to be a full wall (direction 0 check)
+      return [lx, ly] if ($game_map.passable?(lx, ly, 0) rescue false)
       return nil
     end
     if ($game_player.passable?(x, y, d) rescue false) || (clear_at?(nx, ny) && ($game_map.passable?(nx, ny, 10 - d) rescue false))
@@ -1553,6 +1555,16 @@ module RH
   end
 
   # blockers on one event spot -> :tile id, :boulder, :block or nil
+  # a jump pad you step ONTO (then it moves you): no picture, or a floor-like tile you can stand on
+  # (e.g. Route 2's stepping stones). Pads with a person / rock picture are bumped into instead.
+  def self.pad_walkon?(tile_id, charname, pas)
+    return false if charname.to_s != ""
+    t = tile_id.to_i
+    return true if t <= 0
+    return false if !pas || !pas[t]
+    return (pas[t] & 0x0f) == 0
+  end
+
   # spots that make you jump when you walk into them: { direction you face => [dx, dy] }
   def self.jump_spec(list)
     return nil if !list
@@ -1560,9 +1572,13 @@ module RH
     return $rh_jspec[list] if $rh_jspec.key?(list)
     spec = {}
     facing = {}
+    chain = {}      # dir => true while more player moves in the same branch keep adding to the same jump
     list.each do |q|
       if q.code == 111 && q.parameters[0] == 6 && q.parameters[1] == -1
         facing[q.indent] = q.parameters[2]
+        chain = {}
+      elsif q.code == 111 || q.code == 411 || q.code == 412
+        chain = {}    # another condition / else branch: don't add its moves to the one before
       elsif q.code == 209 && q.parameters[0] == -1
         dir = nil
         facing.each { |ind, dd| dir = dd if ind < q.indent }
@@ -1582,7 +1598,14 @@ module RH
             moved = true
           end
         end
-        spec[dir || :any] = [tx, ty] if moved && (tx != 0 || ty != 0)
+        k = dir || :any
+        if moved && chain[k] && spec[k]
+          # e.g. two jumps in a row (jump 2 right, then 2 right again): you land at the end of both
+          spec[k] = [spec[k][0] + tx, spec[k][1] + ty]
+        elsif moved && (tx != 0 || ty != 0)
+          spec[k] = [tx, ty]
+          chain[k] = true
+        end
       end
     end
     $rh_jspec[list] = spec.empty? ? nil : spec
@@ -1590,7 +1613,7 @@ module RH
 
   def self.sort_blocker(md, x, y, through, tile_id, charname, list, name = "", moves = true)
     if (js = jump_spec(list)) && !through
-      js = js.merge(:walkon => true) if tile_id.to_i <= 0 && charname.to_s == ""   # stairs: step onto it, then it moves you
+      js = js.merge(:walkon => true) if pad_walkon?(tile_id, charname, md[:pas])   # stairs / stepping stones: step onto it, then it moves you
       md[:jumps][[x, y]] = js      # not a wall: bumping into it jumps you over
       return
     end
@@ -1987,7 +2010,7 @@ module RH
       lx = (on ? nx : x) + jd[0]
       ly = (on ? ny : y) + jd[1]
       return nil if lx < 0 || ly < 0 || lx >= md[:w] || ly >= md[:h] || md[:block][[lx, ly]]
-      return nil if !m_pass(md, lx, ly, 10 - d) && !m_pass(md, lx, ly, d)
+      return nil if !m_pass(md, lx, ly, 0)    # same rule as the game's jump: landing just can't be a full wall
       return [lx, ly]
     end
     return nil if !m_pass(md, x, y, d) || !m_pass(md, nx, ny, 10 - d) || md[:block][[nx, ny]]
@@ -2714,7 +2737,33 @@ module RH
     if r[:map] != ($game_map.map_id rescue -1) && mapname(r[:map]) == mapname(($game_map.map_id rescue 0))
       t += " You're in the other version of this place - use the switch/machine the dots lead to."
     end
-    return step_count_text(r) + t
+    return gym_next_text(r) + step_count_text(r) + t
+  end
+
+  # every gym badge in the game: badge slot => [map where the badge is handed out, leader]
+  # (read from the game's own events: "$Trainer.badges[N]=true" next to the leader's battle)
+  GYM_BADGES = { 0 => [351, "Julia"], 1 => [127, "Florinia"], 2 => [182, "Shelly"], 3 => [197, "Shade"], 4 => [224, "Aya"],
+    5 => [506, "Serra"], 6 => [232, "Noel"], 7 => [315, "Radomus"], 8 => [350, "Luna"], 9 => [356, "Samson"],
+    10 => [419, "Charlotte"], 11 => [456, "Terra"], 12 => [356, "Ciel"], 13 => [613, "Adrienn"], 14 => [702, "Titania"],
+    15 => [679, "Amaria"], 16 => [740, "Hardy"], 17 => [780, "Saphira"] }
+
+  # the next badge you don't have yet: [slot, map, leader]
+  def self.next_gym
+    GYM_BADGES.keys.sort.each do |i|
+      next if ($Trainer.badges[i] rescue false)
+      return [i, GYM_BADGES[i][0], GYM_BADGES[i][1]]
+    end
+    return nil
+  end
+
+  # "GYM NEXT - Ciel (badge 13): " when the story step takes you to the next gym
+  def self.gym_next_text(r)
+    g = next_gym
+    return "" if !g
+    fam = ((versions_of(r[:map]) || [[r[:map]]])[0] rescue [r[:map]])
+    gfam = ((versions_of(g[1]) || [[g[1]]])[0] rescue [g[1]])
+    return "" if (fam & gfam).empty? && !fam.include?(g[1])
+    return "GYM NEXT - #{g[2]} (badge #{g[0] + 1}). "
   end
 end
 

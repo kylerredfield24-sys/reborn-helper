@@ -1,5 +1,6 @@
 version|46
-note|Story transitions: when the next thing to do is a gym, the goal now says GYM NEXT and who to beat (Ciel now) and where to go.
+note|Story transitions: whenever the story sends you to your next gym (any gym, rest of the game), the goal starts with GYM NEXT - leader (badge #). Right now: Ciel, at the Big Top.
+note|Route 2 fixed: the dots now understand the rock jumps over the Crustles (double jumps, stepping stones), so they lead you all the way from Celestinine Cascade up Route 2 to Agate Circus and the Big Top.
 note|Elevation fix: the dots no longer try to talk to people across railings/walls - only across real counters, like the game. They take the stairs around instead.
 note|Rooms that share a name (like the Big Top's inside room) now say "the room inside it" instead of "version 2 of 2".
 note|Battle help knows status now, in singles AND doubles: asleep for 2+ more turns -> tells you the cheapest wake-up item in your bag (Pop Rocks, Awakening, Chesto, Lava Cookie, Full Heal...). Waking next turn anyway -> says don't waste an item. Frozen, confused and in-love get the same check.
@@ -37,5 +38,5 @@ guide|v276=18|-1|0|0|Wiki step (Coral): Take the stairs that opened up into the 
 guide|v276=26|497|21|4|Wiki step: Go back to North Obsidia Water Grid (the first room by the entrance) and walk up into its top exit - a scene plays and you find Titania.
 guide|v276=27|467|12|11|Wiki step: Walk back up through the Water Treatment Center hall toward the waterfall - a scene plays on the way.
 guide|v276=28|-1|0|0|Wiki step: Go back up the waterfall to Celestinine Cascade (the top of the Water Treatment Center hall). Next stop after that: Fiore Mansion.
-guide|v276>=34&v276<=36&b<13|357|5|5|GYM NEXT - Ciel (badge 13, needed to use Fly): go to Agate Circus > Big Top > the room inside it and talk to Samson. (Titania at the Cascade and Julia in the mansion are optional story talks.)
-guide|v276=37&b<13|357|3|6|GYM NEXT - Ciel: talk to Ciel in the Big Top's inside room and pick Yes ("Shall we dance?") to start the gym battle. Heal first.
+guide|v276>=34&v276<=36&b<13|357|5|6|GYM NEXT - Ciel (badge 13, needed to use Fly): go to Agate Circus > Big Top > the room inside it, stand below Samson and talk to him (face up, press A). (Titania at the Cascade and Julia in the mansion are optional story talks.)
+guide|v276=37&b<13|357|3|7|GYM NEXT - Ciel: stand below Ciel in the Big Top's inside room, talk to her and pick Yes ("Shall we dance?") to start the gym battle. Heal first.
