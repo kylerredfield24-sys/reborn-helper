@@ -1,4 +1,4 @@
-RH_VERSION = 45   # bumped with every release (used by the auto-updater)
+RH_VERSION = 46   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -1017,7 +1017,31 @@ module RH
       y = ev.y
     end
     return [[x, y]] if r[:trig].to_i == 1 || r[:trig].to_i == 2   # step-on spot: be exactly there
-    return [[x, y], [x, y + 1], [x - 1, y], [x + 1, y], [x, y - 1], [x, y + 2], [x - 2, y], [x + 2, y], [x, y - 2]]   # y+2: talk across a counter
+    return talk_tiles($game_map.map_id, x, y)
+  end
+
+  # where you can stand to talk to someone at (x, y): next to them, or 2 away only when a real
+  # counter tile is in between (the game lets you talk across counters - not across railings or walls)
+  def self.talk_tiles(mid, x, y)
+    out = [[x, y], [x, y + 1], [x - 1, y], [x + 1, y], [x, y - 1]]
+    [[0, 1], [-1, 0], [1, 0], [0, -1]].each do |dx, dy|
+      out << [x + 2 * dx, y + 2 * dy] if counter_at?(mid, x + dx, y + dy)
+    end
+    return out
+  end
+
+  def self.counter_at?(mid, x, y)
+    if mid == ($game_map.map_id rescue -1) && $game_map.respond_to?(:counter?)
+      return ($game_map.counter?(x, y) rescue false)
+    end
+    md = (model(mid) rescue nil)
+    return false if !md || !md[:pas] || x < 0 || y < 0 || x >= md[:w] || y >= md[:h]
+    [2, 1, 0].each do |l|
+      t = (md[:data][x, y, l] rescue nil)
+      return false if t.nil?
+      return true if md[:pas][t] && (md[:pas][t] & 0x80) == 0x80
+    end
+    return false
   end
 
   # same as story_goal_tiles but for any map (reads the map file)
@@ -1035,7 +1059,7 @@ module RH
     end
     return nil if x <= 0 && y <= 0
     return [[x, y]] if r[:trig].to_i == 1 || r[:trig].to_i == 2
-    return [[x, y], [x, y + 1], [x - 1, y], [x + 1, y], [x, y - 1], [x, y + 2], [x - 2, y], [x + 2, y], [x, y - 2]]
+    return talk_tiles(r[:map], x, y)
   end
 
   # keep the old path while you are still standing on it (no re-search every step)
@@ -2586,8 +2610,7 @@ module RH
 
   def self.reachable_spot?(c)
     return false if ($rh_unreach || {})[[c[:map], c[:x], c[:y], route_db[:sig]]]
-    spot = [[c[:x], c[:y]], [c[:x], c[:y] + 1], [c[:x] - 1, c[:y]], [c[:x] + 1, c[:y]], [c[:x], c[:y] - 1],
-            [c[:x], c[:y] + 2], [c[:x] - 2, c[:y]], [c[:x] + 2, c[:y]], [c[:x], c[:y] - 2]]
+    spot = talk_tiles(c[:map], c[:x], c[:y])
     here = $game_map.map_id
     if c[:map] == here
       md = model(here)
@@ -2652,6 +2675,12 @@ module RH
     # (the grids are rooms under the Water Treatment Center, not the Reborn City wards with the same names)
     return [" (inside the Water Treatment Center - starting water level, puddles)", " (inside the Water Treatment Center - drained dry)",
             " (inside the Water Treatment Center - filled with dirty water)", " (inside the Water Treatment Center - filled with clean water)"][v[1]].to_s if mapname(id).to_s =~ /Water Grid/
+    # a different-size map with the same name is a separate room inside the place, not another version of it
+    big = (model(v[0][0]) rescue nil)
+    mine = (model(id) rescue nil)
+    if big && mine && v[1] > 0 && (big[:w] != mine[:w] || big[:h] != mine[:h])
+      return " (the room inside it)"
+    end
     return " (version #{v[1] + 1} of #{v[0].length})"
   end
 
