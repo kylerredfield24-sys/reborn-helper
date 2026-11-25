@@ -1,4 +1,4 @@
-RH_VERSION = 46   # bumped with every release (used by the auto-updater)
+RH_VERSION = 47   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -1164,6 +1164,29 @@ module RH
     return [[[px, py]] + link + path[j..-1], label]
   end
 
+  # plain words for a step that changes this place first (a door that moves you, a switch, a floor trigger)
+  def self.toggle_label(path, targets)
+    dest = mapname(targets.first) rescue ""
+    tail = dest.to_s.empty? ? "" : " on the way to #{dest}"
+    ex, ey = path.last
+    ev = nil
+    if ex
+      cands = [[ex, ey], [ex, ey - 1], [ex, ey + 1], [ex - 1, ey], [ex + 1, ey]]
+      cands.each do |cx, cy|
+        ev = ($game_map.events.values.find { |e| e.x == cx && e.y == cy && e.list && e.list.any? { |c| [201, 121, 122, 123].include?(c.code) } } rescue nil)
+        break if ev
+      end
+    end
+    if ev && ev.list.any? { |c| c.code == 201 }
+      return "step onto the marked spot - it takes you through#{tail}"
+    elsif ev && ev.trigger == 0
+      return "press A on the marked switch first#{tail}"
+    end
+    return "step onto the marked spot first - it opens the way#{tail}"
+  rescue
+    "step onto the marked spot first"
+  end
+
   def self.nav_start(dest)
     g[:nav] = dest
     $rh_nav_cache = nil
@@ -1189,6 +1212,8 @@ module RH
       lbl = { :dive => "dark water - Dive (A)", :surface => "surface here (A)",
               :lever => "#{mapname(pl[0])} - use the elevator panel / switch first",
               :toggle => "the switch / trigger marked here (it changes this place)" }[pl[2]] || mapname(pl[0])
+      # a step that keeps you in this same place (a door / stairs that moves you, a switch): say what to do
+      lbl = toggle_label(path, targets) if pl[2] == :toggle || (pl[0] == ($game_map.map_id rescue -1) && !targets.include?(pl[0]))
       lbl += " (push the boulders)" if relax == true
       lbl += " (walk around / talk to people in the way)" if relax == :people
       return [path, lbl]

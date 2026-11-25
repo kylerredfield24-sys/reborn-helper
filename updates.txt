@@ -1,4 +1,5 @@
-version|46
+version|47
+note|Clearer route line: when the dots stop on a spot in the same area (stairs/door that moves you, a switch), it now says what to do - e.g. "step onto the marked spot - it takes you through on the way to Big Top" - instead of "switch / trigger".
 note|Story transitions: whenever the story sends you to your next gym (any gym, rest of the game), the goal starts with GYM NEXT - leader (badge #). Right now: Ciel, at the Big Top.
 note|Route 2 fixed: the dots now understand the rock jumps over the Crustles (double jumps, stepping stones), so they lead you all the way from Celestinine Cascade up Route 2 to Agate Circus and the Big Top.
 note|Elevation fix: the dots no longer try to talk to people across railings/walls - only across real counters, like the game. They take the stairs around instead.
