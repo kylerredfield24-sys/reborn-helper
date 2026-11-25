@@ -1,4 +1,4 @@
-RH_VERSION = 43   # bumped with every release (used by the auto-updater)
+RH_VERSION = 44   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -2966,6 +2966,7 @@ module RH
     party = (battle.pbParty(me.index) rescue $Trainer.party)
     party.each_with_index do |p, pi|
       next if !p || p.isEgg? || p.hp <= 0
+      next if !mine?(battle, me.index, pi)
       next if battle.battlers.any? { |b| b && b.pokemon.equal?(p) && b.hp > 0 }
       fake = (battle.ai.pbMakeFakeBattler(p, pi, false, me.index) rescue nil)
       next if !fake
@@ -3027,6 +3028,13 @@ module RH
     return best ? best[1] : nil
   end
 
+  # In a battle with an ally trainer, pbParty holds BOTH teams - only your own
+  # Pokemon can be sent in, so skip the partner's.
+  def self.mine?(battle, idx, pi)
+    return true if !battle.respond_to?(:pbIsOwner?)
+    return (battle.pbIsOwner?(idx, pi) rescue true)
+  end
+
   # rank your benched Pokemon against the foes on the field (real damage calc)
   # Rank your benched Pokemon vs the foes on the field, using CURRENT HP.
   # free = true when your Pokemon fainted (the switch-in doesn't get hit first).
@@ -3037,6 +3045,7 @@ module RH
     out = []
     party.each_with_index do |p, pi|
       next if !p || p.isEgg? || p.hp <= 0
+      next if !mine?(battle, idx, pi)
       next if battle.battlers.any? { |b| b && b.pokemon.equal?(p) && b.hp > 0 }
       fake = (battle.ai.pbMakeFakeBattler(p, pi, false, idx) rescue nil)
       next if !fake
