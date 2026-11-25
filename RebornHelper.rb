@@ -1,4 +1,4 @@
-RH_VERSION = 47   # bumped with every release (used by the auto-updater)
+RH_VERSION = 48   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -3797,6 +3797,15 @@ module RH
     return if !data || !data[2] || data[2].empty?
     team = data[2]
     key = battle_key(type, name, pid)
+    # gym leaders and story (cutscene) fights: offer the best team from your party AND your PC boxes first
+    kind = big_fight_kind(type)
+    if kind
+      done = (team_switch_offer(team, name, kind) rescue false)
+      if done
+        $rh_last_fight = [key, ($Trainer.party.find { |p| p && !p.isEgg? && p.hp > 0 }.species rescue nil)]
+        return
+      end
+    end
     lost = ((d[:losses] ||= {})[key] ||= [])
     ranked = coach_rank(team, lost)
     best = ranked.first
@@ -3822,7 +3831,182 @@ module RH
     $rh_last_fight = [key, first ? first.species : nil]
   end
 
+  GYM_LEADER_TYPES = [:JULIA, :FLORINIA, :SHELLY, :SHADE, :AYA, :SERRA, :NOEL, :RADOMUS, :LUNA, :SAMSON, :CHARLOTTE,
+    :TERRA, :CIEL, :ADRIENN, :TITANIA1, :TITANIA2, :AMARIA1, :AMARIA2, :HARDY, :SAPHIRA]
+
+  # "Gym battle" / "Story battle" / nil (a normal trainer who spots you on the route)
+  def self.big_fight_kind(type)
+    return "Gym battle" if GYM_LEADER_TYPES.include?(type)
+    return nil if !(pbMapInterpreterRunning? rescue false)
+    ev = (pbMapInterpreter.get_character(0) rescue nil)
+    return nil if !ev || !ev.respond_to?(:name)
+    return nil if ev.name.to_s =~ /^Trainer\(\d+\)/i      # route trainers that walk up to you
+    return "Story battle"
+  end
+
+  # rough damage of one hit as a share of the target's max HP (stats, level, STAB, types, common immunities)
+  ABILITY_IMMUNE = { :LEVITATE => :GROUND, :FLASHFIRE => :FIRE, :WATERABSORB => :WATER, :STORMDRAIN => :WATER,
+    :DRYSKIN => :WATER, :VOLTABSORB => :ELECTRIC, :LIGHTNINGROD => :ELECTRIC, :MOTORDRIVE => :ELECTRIC, :SAPSIPPER => :GRASS }
+  def self.hit_share(a, d, move)
+    md = ($cache.moves[move] rescue nil)
+    return 0.0 if !md || md.basedamage.to_i <= 1
+    return 0.0 if ABILITY_IMMUNE[(d.ability rescue nil)] == md.type
+    phys = (md.category == :physical)
+    atk = phys ? a.attack : a.spatk
+    dfn = phys ? d.defense : d.spdef
+    base = ((2.0 * a.level / 5 + 2) * md.basedamage * atk / [dfn, 1].max) / 50 + 2
+    base *= 1.5 if [a.type1, a.type2].include?(md.type)
+    base *= type_mult(md.type, [d.type1, d.type2])
+    acc = md.accuracy.to_i
+    base *= (acc > 0 && acc < 100 ? acc / 100.0 : 1.0)
+    return base / [d.totalhp, 1].max
+  rescue
+    0.0
+  end
+
+  # how well one of your Pokemon does against one foe: hits it hard, takes little back, outspeeds
+  def self.vs_score(p, e)
+    off = 0.0
+    p.moves.each { |m| off = [off, hit_share(p, e, m.move)].max if m && m.move }
+    dfn = 0.0
+    e.moves.each { |m| dfn = [dfn, hit_share(e, p, m.move)].max if m && m.move }
+    s = [off, 1.2].min - [dfn, 1.2].min
+    s += 0.15 if p.speed > e.speed
+    return s
+  end
+
+  # best 6 for this fight from party + PC: greedy, so every foe has a good answer (prefers who you already carry)
+  def self.best_team(team)
+    pool = $Trainer.party.find_all { |p| p && !p.isEgg? && p.hp > 0 }.map { |p| [p, nil, nil] }
+    st = $PokemonStorage
+    if st
+      (0...(st.maxBoxes rescue 0)).each do |b|
+        (0...(st.maxPokemon(b) rescue 0)).each do |i|
+          p = (st[b, i] rescue nil)
+          pool << [p, b, i] if p && !p.isEgg? && p.hp > 0
+        end
+      end
+    end
+    return nil if pool.empty?
+    sc = {}
+    pool.each { |p, _, _| sc[p.object_id] = team.map { |e| vs_score(p, e) } }
+    pick = []
+    best = Array.new(team.length, -9.0)
+    [6, pool.length].min.times do
+      cand = pool.reject { |c| pick.include?(c) }.max_by do |c|
+        v = sc[c[0].object_id]
+        gain = v.each_with_index.sum { |x, k| [x, best[k]].max - best[k] }
+        gain + 0.1 * (v.sum / v.length) + (c[1].nil? ? 0.05 : 0)
+      end
+      break if !cand
+      pick << cand
+      sc[cand[0].object_id].each_with_index { |x, k| best[k] = [best[k], x].max }
+    end
+    return [pick, sc]
+  end
+
+  def self.team_value(mons, sc, n)
+    return -99.0 if mons.empty?
+    (0...n).sum { |k| mons.map { |p| sc[p.object_id] ? sc[p.object_id][k] : -9.0 }.max } +
+      0.1 * mons.sum { |p| sc[p.object_id] ? sc[p.object_id].sum / n : 0 }
+  end
+
+  # ask once before a gym / story fight; default answer keeps your team. Returns true if it asked.
+  def self.team_switch_offer(team, name, kind)
+    res = best_team(team)
+    return false if !res
+    pick, sc = res
+    mine = $Trainer.party.find_all { |p| p && !p.isEgg? && p.hp > 0 }
+    bring = pick.find_all { |p, b, i| !b.nil? }
+    return false if bring.empty?
+    newset = pick.map { |c| c[0] }
+    return false if team_value(newset, sc, team.length) < team_value(mine, sc, team.length) + 0.4   # not clearly better
+    out = mine.reject { |p| newset.include?(p) }.sort_by { |p| sc[p.object_id] ? sc[p.object_id].sum : -99 }
+    pairs = []
+    free = 6 - $Trainer.party.compact.length
+    bring.each_with_index do |c, k|
+      if out[k]
+        pairs << [out[k], c]
+      elsif free > 0           # an empty party slot: just bring it along
+        pairs << [nil, c]
+        free -= 1
+      end
+    end
+    return false if pairs.empty?
+    ins = pairs.map { |o, c| c[0].name }.join(", ")
+    outs = pairs.map { |o, c| o ? o.name : nil }.compact.join(", ")
+    outs = "nobody (you have a free slot)" if outs.empty?
+    msg = _INTL("{1} vs {2}: a better team for this fight is in your PC.\nIn: {3}\nOut (to the PC): {4}", kind, name, ins, outs)
+    ch = (Kernel.pbMessage(msg, [_INTL("Keep my team"), _INTL("Switch team")], 1) rescue 0)
+    if ch == 1
+      swaps = []
+      pairs.each do |o, (p, b, i)|
+        next if !($PokemonStorage[b, i].equal?(p) rescue false)
+        if !o
+          next if $Trainer.party.compact.length >= 6
+          $Trainer.party.push(p)
+          $PokemonStorage[b, i] = nil
+          swaps << [nil, p, b, i]
+          next
+        end
+        pi = $Trainer.party.index(o)
+        next if !pi
+        $Trainer.party[pi] = p
+        (o.heal rescue nil) if !($game_switches[:Nuzlocke_Mode] rescue false)   # the PC heals what goes into it
+        $PokemonStorage[b, i] = o
+        swaps << [o, p, b, i]
+      end
+      # lead with the best answer to their first Pokemon
+      lead = $Trainer.party.find_all { |p| p && !p.isEgg? && p.hp > 0 }.max_by { |p| vs_score(p, team.first) }
+      if lead && (li = $Trainer.party.index(lead)) && li > 0
+        $Trainer.party[0], $Trainer.party[li] = $Trainer.party[li], $Trainer.party[0]
+      end
+      $rh_swapback = swaps.empty? ? nil : swaps
+      Kernel.pbMessage(_INTL("Team switched. {1} leads. After the fight I'll offer to put your old team back.", lead.name)) rescue nil if lead
+    end
+    return true
+  end
+
+  # after the fight: offer to undo the switch (only Pokemon still where they were put)
+  def self.swap_back
+    sw = $rh_swapback
+    $rh_swapback = nil
+    return if !sw || sw.empty?
+    ch = (Kernel.pbMessage(_INTL("Put your old team back?"), [_INTL("Yes"), _INTL("No")], 2) rescue 1)
+    return if ch != 0
+    sw.each do |o, p, b, i|
+      pi = $Trainer.party.index(p)
+      next if !pi
+      if !o      # it came into a free slot: send it back to its PC spot if that's still empty
+        next if ($PokemonStorage[b, i] rescue true) || $Trainer.party.compact.length <= 1
+        $Trainer.party.delete_at(pi)
+        (p.heal rescue nil) if !($game_switches[:Nuzlocke_Mode] rescue false)
+        $PokemonStorage[b, i] = p
+        next
+      end
+      next if !($PokemonStorage[b, i].equal?(o) rescue false)
+      $Trainer.party[pi] = o
+      (p.heal rescue nil) if !($game_switches[:Nuzlocke_Mode] rescue false)
+      $PokemonStorage[b, i] = p
+    end
+  end
+
+  # two trainers at once (story double battles)
+  def self.prebattle_double(id1, n1, p1, id2, n2, p2)
+    d = g
+    return if !d || d[:battle] == false
+    team = []
+    [[id1, n1, p1], [id2, n2, p2]].each do |t, n, pi|
+      data = (pbLoadTrainer(t, n, pi) rescue nil)
+      team.concat(data[2]) if data && data[2]
+    end
+    return if team.empty?
+    kind = big_fight_kind(id1) || big_fight_kind(id2)
+    team_switch_offer(team, "#{n1} & #{n2}", kind) if kind
+  end
+
   def self.postbattle(won)
+    (swap_back rescue nil)
     return if !$rh_last_fight
     key, sp = $rh_last_fight
     $rh_last_fight = nil
@@ -3847,6 +4031,16 @@ def pbTrainerBattle(trainerid, trainername, endspeech = nil, doublebattle = fals
   ret = rh_pbTrainerBattle(trainerid, trainername, endspeech, doublebattle, trainerparty, *args, **kw)
   RH.postbattle(ret ? true : false) rescue nil
   return ret
+end
+
+if Object.private_method_defined?(:pbDoubleTrainerBattle) && !Object.private_method_defined?(:rh_pbDoubleTrainerBattle)
+  Object.send(:alias_method, :rh_pbDoubleTrainerBattle, :pbDoubleTrainerBattle)
+  def pbDoubleTrainerBattle(id1, n1, p1, s1, id2, n2, p2, s2, *args, **kw)
+    (RH.prebattle_double(id1, n1, p1, id2, n2, p2) rescue nil)
+    ret = rh_pbDoubleTrainerBattle(id1, n1, p1, s1, id2, n2, p2, s2, *args, **kw)
+    (RH.swap_back rescue nil)
+    return ret
+  end
 end
 
 #==============================================================================
