@@ -1,4 +1,6 @@
-version|44
+version|45
+note|Battle help knows status now, in singles AND doubles: asleep for 2+ more turns -> tells you the cheapest wake-up item in your bag (Pop Rocks, Awakening, Chesto, Lava Cookie, Full Heal...). Waking next turn anyway -> says don't waste an item. Frozen, confused and in-love get the same check.
+note|Added every remaining healing / curing item from the game's item code: Lava Cookie, Old Gateau, Casteliacone, Big Malasada, Medicine, Razz Tart, Figy/Wiki/Mago/Aguav/Iapapa berries, Persim Berry, Yellow and Red Flute.
 note|Battles with an ally trainer (like the Team Meteor break-in duo fight): the switch helper now only lists YOUR Pokemon, not your partner's.
 note|Water Treatment map: a small map of all 9 water rooms shows in the top-left while you're there - blue = clean, brown = dirty, grey = low water, white frame = you, green frame = where to go, yellow dots = the way room to room.
 note|Choice help now shows the whole tip (no cut-off lines) and keeps it simple: what YES does, what NO does.

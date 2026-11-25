@@ -1,4 +1,4 @@
-RH_VERSION = 44   # bumped with every release (used by the auto-updater)
+RH_VERSION = 45   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -56,17 +56,29 @@ module RH
     :SUPERPOTION => 60, :LEMONADE => 70, :MOOMOOMILK => 100, :MAGICMILK => 100, :ENERGYPOWDER => 60,
     :VANILLAIC => 30, :CHOCOLATEIC => 70, :STRAWBIC => 90, :BLUEMIC => 200, :BUBBLETEA => 180, :MEMEONADE => 103,
     :STRAWCAKE => 150, :CHINESEFOOD => 300, :ENERGYROOT => 120,
+    :FIGYBERRY => :half, :WIKIBERRY => :half, :MAGOBERRY => :half, :AGUAVBERRY => :half, :IAPAPABERRY => :half,
     :HYPERPOTION => 120, :ULTRAPOTION => 200, :MAXPOTION => 9999, :FULLRESTORE => 9999, :SITRUSBERRY => :quarter
   }
   # status cures (:all = every status)
   CURE_ITEMS = {
     :FULLHEAL => :all, :FULLRESTORE => :all, :HEALPOWDER => :all, :RAGECANDYBAR => :all, :LUMBERRY => :all,
+    :LAVACOOKIE => :all, :OLDGATEAU => :all, :CASTELIACONE => :all, :BIGMALASADA => :all, :MEDICINE => :all, :RAZZTART => :all,
     :AWAKENING => [:SLEEP], :CHESTOBERRY => [:SLEEP], :BLUEFLUTE => [:SLEEP], :POKEFLUTE => [:SLEEP], :POPROCKS => [:SLEEP],
     :ANTIDOTE => [:POISON], :PECHABERRY => [:POISON], :PEPPERMINT => [:POISON],
     :BURNHEAL => [:BURN], :RAWSTBERRY => [:BURN], :SALTWATERTAFFY => [:BURN],
     :PARLYZHEAL => [:PARALYSIS], :CHERIBERRY => [:PARALYSIS], :CHEWINGGUM => [:PARALYSIS],
     :ICEHEAL => [:FROZEN], :ASPEARBERRY => [:FROZEN], :REDHOTS => [:FROZEN]
   }
+  # cheapest first: when several items fix the same thing, use the most specific one (save Full Heal / Full Restore)
+  CURE_ORDER = [:CHESTOBERRY, :PECHABERRY, :RAWSTBERRY, :CHERIBERRY, :ASPEARBERRY,
+    :POPROCKS, :PEPPERMINT, :SALTWATERTAFFY, :CHEWINGGUM, :REDHOTS,
+    :AWAKENING, :ANTIDOTE, :BURNHEAL, :PARLYZHEAL, :ICEHEAL, :BLUEFLUTE, :POKEFLUTE,
+    :HEALPOWDER, :LUMBERRY, :LAVACOOKIE, :OLDGATEAU, :CASTELIACONE, :BIGMALASADA, :MEDICINE, :RAZZTART,
+    :RAGECANDYBAR, :FULLHEAL, :FULLRESTORE]
+  # confusion / infatuation fixers (from the game's ItemEffects.rb)
+  CONFUSE_ITEMS = [:PERSIMBERRY, :YELLOWFLUTE, :RAGECANDYBAR, :LAVACOOKIE, :OLDGATEAU, :CASTELIACONE, :BIGMALASADA,
+    :MEDICINE, :RAZZTART, :LUMBERRY, :FULLHEAL, :FULLRESTORE]
+  ATTRACT_ITEMS = [:REDFLUTE]
   # bring a fainted Pokemon back (share of max HP)
   REVIVE_ITEMS = { :REVIVE => 0.5, :FUNNELCAKE => 0.5, :COTTONCANDY => 0.5, :MAXREVIVE => 1.0, :HERBALTEA => 1.0, :REVIVALHERB => 1.0 }
 
@@ -2749,6 +2761,7 @@ module RH
   def self.heal_amt(item, mon)
     v = HEAL_ITEMS[item]
     return (mon.totalhp / 4.0).floor if v == :quarter
+    return (mon.totalhp / 2.0).floor if v == :half
     return v.to_i
   end
 
@@ -3276,7 +3289,50 @@ module RH
   end
 
   # One clear decision, based on everyone's CURRENT HP and speed.
+  # the cheapest item in your bag that fixes this
+  def self.cure_item(st)
+    return nil if !$PokemonBag
+    CURE_ORDER.find { |it| c = CURE_ITEMS[it]; c && (c == :all || c.include?(st)) && bag_qty(it) > 0 }
+  end
+
+  # Your Pokemon can't act this turn (asleep / frozen), or is confused / in love: fix it from the bag first.
+  # Works in singles and doubles. Returns [text, color] or nil.
+  def self.status_advice(battle, a)
+    me = a[:me]
+    st = status_of(me)
+    sleeptalk = me.moves.any? { |m| m && [:SLEEPTALK, :SNORE].include?(m.move) && m.pp > 0 }
+    if st == :SLEEP
+      left = (me.statusCount rescue 2).to_i - (me.ability == :EARLYBIRD ? 2 : 1)
+      return nil if left <= 0                     # wakes up when it tries to move this turn
+      # using an item takes the turn too, so it only pays off when it would sleep 2+ more turns
+      return ["Asleep this turn, wakes next turn - no item needed, just pick a move", WARN] if left == 1 && !sleeptalk
+      it = cure_item(:SLEEP)
+      return ["Asleep #{left} more turns - use #{iname(it)} now (saves #{left - 1} turn#{left == 2 ? '' : 's'})", WARN] if it
+      return ["Asleep - use Sleep Talk", WARN] if sleeptalk
+      sw = (rank_switches(battle, me.index).find { |o| !o[:faints] } rescue nil)
+      return ["Asleep #{left} more turn#{left == 1 ? '' : 's'}, no wake-up item - switch to #{sw[:mon].name}", WARN] if sw
+      return ["Asleep #{left} more turn#{left == 1 ? '' : 's'} - no wake-up item or safe switch", BAD]
+    end
+    if st == :FROZEN
+      thaw = me.moves.find { |m| m && m.pp > 0 && ((m.canThawUser? rescue false)) }
+      return ["Frozen - #{mname(thaw.move)} thaws it", GOOD] if thaw
+      it = cure_item(:FROZEN)
+      return ["Frozen - use #{iname(it)} (only 20% to thaw a turn)", WARN] if it
+    end
+    if (me.effects[:Attract] rescue -1).to_i >= 0 && $PokemonBag
+      it = ATTRACT_ITEMS.find { |i| bag_qty(i) > 0 }
+      return ["In love (50% won't move) - use #{iname(it)}", WARN] if it
+    end
+    if (me.effects[:Confusion] rescue 0).to_i > 1 && $PokemonBag
+      it = CONFUSE_ITEMS.find { |i| bag_qty(i) > 0 }
+      return ["Confused (may hit itself) - use #{iname(it)}", WARN] if it
+    end
+    return nil
+  end
+
   def self.advice(battle, a)
+    sa = (status_advice(battle, a) rescue nil)
+    return sa if sa
     me0 = a[:me]
     b0 = a[:best]
     # a clean KO this turn that they can't stop: just do it
