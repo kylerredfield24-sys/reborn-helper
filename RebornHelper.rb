@@ -1,4 +1,4 @@
-RH_VERSION = 49   # bumped with every release (used by the auto-updater)
+RH_VERSION = 50   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -390,14 +390,39 @@ module RH
     c = cap
     targets = $Trainer.party.find_all { |p| p && !p.isEgg? && p.level < c }
     if targets.empty?
+      pend = $Trainer.party.find_all { |p| p && !p.isEgg? && (checkEvolution(p) rescue nil) }
+      if !pend.empty?
+        names = pend.map { |p| p.name }.join(", ")
+        if Kernel.pbConfirmMessage(_INTL("{1} can still evolve. Evolve now?", names))
+          pend.each { |p| evolve_pending(p) }
+        end
+        return
+      end
       Kernel.pbMessage(_INTL("Everyone in your party is already at the level cap ({1}).", c))
       return
     end
     names = targets.map { |p| p.name }.join(", ")
     return if !Kernel.pbConfirmMessage(_INTL("Max Candy: raise {1} to Lv. {2}?", names, c))
     sc = DummyScene.new
-    targets.each { |p| pbChangeLevel(p, c, sc) }
+    targets.each { |p| pbChangeLevel(p, c, sc); evolve_pending(p) }
     g[:candy] += 1
+  end
+
+  # A big level jump only runs one evolution (Beldum -> Metang at Lv 80).
+  # Keep evolving while the Pokemon qualifies (stops if you cancel with B).
+  def self.evolve_pending(p)
+    5.times do
+      ns = (checkEvolution(p) rescue nil)
+      break if !ns
+      old = p.species
+      pbFadeOutInWithMusic(99999) {
+        evo = PokemonEvolutionScene.new
+        evo.pbStartScreen(p, ns)
+        evo.pbEvolution
+        evo.pbEndScreen
+      }
+      break if p.species == old
+    end
   end
 
   #------------------------------------------------------------------ dialogue clues
@@ -810,6 +835,13 @@ module RH
       on = js[:walkon] && ($game_player.passable?(x, y, d) rescue false)
       lx = (on ? nx : x) + jd[0]
       ly = (on ? ny : y) + jd[1]
+      # landing on another step-on pad (a staircase of them) carries you on, like the game does
+      k = 0
+      while k < 30 && (j2 = $rh_jumppos[[lx, ly]]) && j2[:walkon] && (d2 = j2[d] || j2[:any])
+        lx += d2[0]
+        ly += d2[1]
+        k += 1
+      end
       return nil if lx < 0 || ly < 0 || lx >= mw || ly >= mh || blocked_by_event?(lx, ly) || void?(lx, ly)
       # the game's jump only needs the landing tile not to be a full wall (direction 0 check)
       return [lx, ly] if ($game_map.passable?(lx, ly, 0) rescue false)
@@ -2034,6 +2066,12 @@ module RH
       on = js[:walkon] && m_pass(md, x, y, d) && m_pass(md, nx, ny, 10 - d)
       lx = (on ? nx : x) + jd[0]
       ly = (on ? ny : y) + jd[1]
+      k = 0
+      while k < 30 && (j2 = md[:jumps][[lx, ly]]) && j2[:walkon] && (d2 = j2[d] || j2[:any])
+        lx += d2[0]
+        ly += d2[1]
+        k += 1
+      end
       return nil if lx < 0 || ly < 0 || lx >= md[:w] || ly >= md[:h] || md[:block][[lx, ly]]
       return nil if !m_pass(md, lx, ly, 0)    # same rule as the game's jump: landing just can't be a full wall
       return [lx, ly]
