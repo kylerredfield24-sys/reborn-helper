@@ -1,4 +1,5 @@
-version|50
+version|51
+note|Side quest tracker: the Goal tab now shows how to get the Mega-Z Ring (ARC's quest stage, who still needs their Pokemon back, or the freemegaz password route) - pick the line to draw the route. A message pops up once each time it changes.
 note|Max Candy now finishes every evolution (Beldum goes all the way to Metagross). If a Pokemon is already at the cap but can still evolve (like a Metang at Lv 80), pick Max Candy again and it offers to evolve it.
 note|Walking path: staircases made of several stair pads in a row are now followed correctly.
 note|Gym & story battles: the helper now ALWAYS speaks up first - it lists their team with held items and who will Mega Evolve, then either offers a better team from your PC or (if yours is already best) offers the best lead.

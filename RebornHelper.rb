@@ -1,4 +1,4 @@
-RH_VERSION = 50   # bumped with every release (used by the auto-updater)
+RH_VERSION = 51   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -2831,6 +2831,69 @@ module RH
 end
 
 #==============================================================================
+# Side quest: Mega-Z Ring (read from the game's own events)
+#   ARC at the Nightclub (after the city changes, switch 479): var 160 >= 12 -> he explains (var 160 = 20),
+#   then 5 lost Pokemon go back to their owners (+1 each); at 25 he hands over the ring.
+#   var 160 < 12 = the 7th Street part (old city) was never done, so his quest can't start any more.
+#   Password "freemegaz" (switch 2166) puts a free ring in an item ball in the Grand Hall (Map 38, 4,7).
+#==============================================================================
+module RH
+  MR_RINGS = [:MEGARING, :MEGABRACELET, :MEGACUFF, :MEGACHARM]
+  MR_ARC = [826, 12, 6]      # stand below ARC
+  MR_BALL = [38, 4, 8]       # stand below the item ball
+
+  def self.has_megaring?
+    MR_RINGS.any? { |i| ($PokemonBag.pbQuantity(i) rescue 0) > 0 }
+  end
+
+  # [key, text, target or nil, [[text, target], ...]] - nil when there's nothing to do
+  def self.megaring_step
+    return nil if !$game_switches || !$PokemonBag || has_megaring?
+    if sw?(2166)
+      return [:ball, "Mega-Z Ring: pick up the item ball on the left side of the Grand Hall (Opal Ward) - stand below it and press A.", MR_BALL, []]
+    end
+    return nil if !sw?(479)
+    v = ($game_variables[160] rescue 0).to_i
+    if v < 12
+      chips = ($PokemonBag.pbQuantity(:DATACHIP) rescue 0)
+      return [:pw, "Mega-Z Ring: ARC's quest can't start for you (its first part was in the old city). " +
+                   "Get it with a password instead: any PC > Add Password > freemegaz (uses 1 Data Chip - you have #{chips}). " +
+                   "Then the ring is in an item ball in the Grand Hall.", nil, []]
+    elsif v < 20
+      return [:arc, "Mega-Z Ring quest is open: talk to ARC at the Nightclub (North Obsidia Ward).", MR_ARC, []]
+    elsif v < 25
+      rows = []
+      rows << ["Felicia (Apophyll Academy): talk to her, get ARC's autograph at the Nightclub, then give her Pokemon back.", [23, 2, 17]] if !sw?(1721)
+      if !sw?(1724)
+        rows << ["Lillin (Jasper Ward): give her Loudred back.", [534, 12, 10]]
+      elsif !sw?(1725)
+        rows << ["Lillin (Jasper Ward): give her Santiago's Jigglypuff, then the Headphones Felicia gives you.", [534, 12, 10]]
+      end
+      if !sw?(1723)
+        rows << (sw?(714) ? ["Eustace (Lapis Ward): give him his Pokemon back.", [612, 22, 9]] :
+                            ["Santiago (North Peridot Alley): he sends you to Eustace on an Onyx Ward rooftop.", [532, 8, 10]])
+      end
+      rows << ["Mr. McKrezzy (Spinel Town): give him his Pokemon back.", [242, 4, 21]] if !sw?(1722)
+      return [:ret, "Mega-Z Ring quest: give the lost Pokemon back to their owners (#{v - 20}/5 done):", nil, rows]
+    end
+    return [:ready, "Mega-Z Ring is ready: talk to ARC at the Nightclub (North Obsidia Ward).", MR_ARC, []]
+  end
+
+  # one message each time the quest reaches a new stage
+  def self.megaring_notice
+    d = g
+    return if !d
+    mr = megaring_step
+    key = mr ? mr[0].to_s : "none"
+    return if d[:mr_seen] == key
+    d[:mr_seen] = key
+    return if !mr
+    Kernel.pbMessage(_INTL("Reborn Helper - {1}", mr[1]))
+    Kernel.pbMessage(_INTL("(R menu > Goal: pick the side quest line to draw the route there.)")) if mr[2] || !mr[3].empty?
+  end
+end
+
+#==============================================================================
 # Battle panel
 #==============================================================================
 module RH
@@ -4927,6 +4990,10 @@ module RH
         r = []
         obj = RH.objective
         r << [:info, "Now: " + (obj || "No tracked objective yet - talk to people and it fills in."), TXT]
+        if (mr = (RH.megaring_step rescue nil))
+          r << (mr[2] ? [:side, "Side quest - " + mr[1], ACCENT, mr[2]] : [:info, "Side quest - " + mr[1], ACCENT])
+          mr[3].each { |t, tg| r << [:side, "   " + t, TXT, tg] }
+        end
         d[:clues].each_with_index do |c, i|
           label = (c[:done] ? "[done] " : "") + c[:text]
           r << (c[:map] ? [:clue, label, c[:done] ? DIM : TXT, i] : [:info, label, c[:done] ? DIM : TXT])
@@ -5018,6 +5085,9 @@ module RH
       when :exit
         RH.nav_start([row[3]])
         @note = "Route line on. Follow the dots."
+      when :side
+        RH.nav_start([:spot] + row[3])
+        @note = "Route line on to the side quest. Once you're there the dots go back to the story."
       when :story
         RH.nav_start(:story)
         @note = "Following the story. The dots update as you go."
@@ -5230,6 +5300,9 @@ class Scene_Map
       end
       $rh_hud_frame = Graphics.frame_count
       RH.hud_update
+      if free && Graphics.frame_count % 120 == 0
+        (RH.megaring_notice rescue nil)
+      end
     rescue => e
       RH.log_err(e, "map") rescue nil
       RH.hud_hide rescue nil
