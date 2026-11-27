@@ -1,4 +1,4 @@
-RH_VERSION = 53   # bumped with every release (used by the auto-updater)
+RH_VERSION = 54   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -4072,7 +4072,20 @@ module RH
     end
     return nil if pool.empty?
     sc = {}
-    pool.each { |p, _, _| sc[p.object_id] = team.map { |e| vs_score(p, e) } }
+    c = cap
+    pool.each do |p, b, _|
+      q = p
+      if b && p.level < c        # PC Pokemon get raised to the level cap when they join - judge them at that level
+        q = (p.clone rescue p)
+        begin
+          q.level = c
+          q.calcStats
+        rescue
+          q = p
+        end
+      end
+      sc[p.object_id] = team.map { |e| vs_score(q, e) }
+    end
     pick = []
     best = Array.new(team.length, -9.0)
     [6, pool.length].min.times do
@@ -4112,12 +4125,8 @@ module RH
     mine = $Trainer.party.find_all { |p| p && !p.isEgg? && p.hp > 0 }
     lead = mine.first
     best = mine.max_by { |p| vs_score(p, team.first) }
-    return if !lead || !best
-    if best.equal?(lead)
-      Kernel.pbMessage(_INTL("Your team is already the best pick (party + PC). {1} leads - good vs {2}.", lead.name, team.first.name)) rescue nil
-      return
-    end
-    ch = (Kernel.pbMessage(_INTL("Your team is already the best pick (party + PC). Lead with {1} vs their {2}?", best.name, team.first.name),
+    return if !lead || !best || best.equal?(lead)
+    ch = (Kernel.pbMessage(_INTL("\\c[1]Lead with {1} vs their {2}?", best.name, team.first.name),
                            [_INTL("Keep {1} first", lead.name), _INTL("Lead with {1}", best.name)], 1) rescue 0)
     if ch == 1
       i = $Trainer.party.index(best)
@@ -4130,7 +4139,6 @@ module RH
     res = best_team(team)
     return false if !res
     pick, sc = res
-    Kernel.pbMessage(_INTL("{1} vs {2}. Their team: {3}.", kind, name, foe_team_text(team))) rescue nil
     mine = $Trainer.party.find_all { |p| p && !p.isEgg? && p.hp > 0 }
     bring = pick.find_all { |p, b, i| !b.nil? }
     newset = pick.map { |c| c[0] }
@@ -4155,10 +4163,11 @@ module RH
     end
     ins = pairs.map { |o, c| c[0].name }.join(", ")
     outs = pairs.map { |o, c| o ? o.name : nil }.compact.join(", ")
-    outs = "nobody (you have a free slot)" if outs.empty?
-    msg = _INTL("{1} vs {2}: a better team for this fight is in your PC.\nIn: {3}\nOut (to the PC): {4}", kind, name, ins, outs)
+    msg = outs.empty? ? _INTL("\\c[1]Switch to a better team for this fight?\\c[0] {1} in.", ins) :
+                        _INTL("\\c[1]Switch to a better team for this fight?\\c[0] {1} out for {2}.", outs, ins)
     ch = (Kernel.pbMessage(msg, [_INTL("Keep my team"), _INTL("Switch team")], 1) rescue 0)
     if ch == 1
+      $rh_partyorder = $Trainer.party.dup
       swaps = []
       pairs.each do |o, (p, b, i)|
         next if !($PokemonStorage[b, i].equal?(p) rescue false)
@@ -4176,24 +4185,153 @@ module RH
         $PokemonStorage[b, i] = o
         swaps << [o, p, b, i]
       end
+      # newcomers: up to the level cap (keeps it after the fight)
+      c = cap
+      swaps.each do |o, p, b, i|
+        next if p.level >= c
+        begin
+          p.level = c
+          p.exp = PBExp.startExperience(c, p.growthrate)
+          p.calcStats
+          p.heal
+        rescue
+        end
+        (evolve_pending(p) rescue nil)
+      end
+      party = $Trainer.party.find_all { |p| p && !p.isEgg? }
+      # best moves for this fight (kept afterwards - they're all relearnable)
+      party.each { |p| (fight_moves(p, team) rescue nil) }
+      # best held items for this fight from your bag and the Pokemon that went to the PC (put back afterwards)
+      $rh_itemback = (fight_items(party, swaps.map { |o, _, _, _| o }.compact) rescue nil)
       # lead with the best answer to their first Pokemon
       lead = $Trainer.party.find_all { |p| p && !p.isEgg? && p.hp > 0 }.max_by { |p| vs_score(p, team.first) }
       if lead && (li = $Trainer.party.index(lead)) && li > 0
         $Trainer.party[0], $Trainer.party[li] = $Trainer.party[li], $Trainer.party[0]
       end
       $rh_swapback = swaps.empty? ? nil : swaps
-      Kernel.pbMessage(_INTL("Team switched. {1} leads. After the fight I'll offer to put your old team back.", lead.name)) rescue nil if lead
     end
     return true
   end
 
+  # moves you can always get back at the Move Relearner (level-up / relearn / first moves)
+  def self.natural_moves(p)
+    out = []
+    (p.getMoveList rescue []).each { |lv, m| out << m if lv <= p.level }
+    out += (p.getRelearnList rescue [])
+    out += (p.firstmoves || []) rescue nil
+    out.uniq
+  end
+
+  KEEP_STATUS = [:RECOVER, :ROOST, :SOFTBOILED, :MILKDRINK, :SLACKOFF, :SYNTHESIS, :MOONLIGHT, :MORNINGSUN, :SHOREUP,
+    :WISH, :REST, :PROTECT, :DETECT, :KINGSSHIELD, :SPIKYSHIELD, :BANEFULBUNKER, :SWORDSDANCE, :DRAGONDANCE, :CALMMIND,
+    :NASTYPLOT, :QUIVERDANCE, :SHELLSMASH, :BULKUP, :COIL, :SHIFTGEAR, :AGILITY, :ROCKPOLISH, :LIGHTSCREEN, :REFLECT,
+    :AURORAVEIL, :TAILWIND, :TRICKROOM, :SUBSTITUTE, :LEECHSEED, :TOXIC, :WILLOWISP, :THUNDERWAVE, :SPORE, :SLEEPPOWDER,
+    :HYPNOSIS, :YAWN, :STEALTHROCK, :SPIKES, :TOXICSPIKES, :STICKYWEB, :HAZE, :AQUARING, :INGRAIN, :MAGNETRISE]
+
+  # pick the 4 moves that hit this team hardest (keeps healing / set-up / support moves it already has,
+  # and never drops a move it can't get back at the Move Relearner, like TM moves)
+  def self.fight_moves(p, team)
+    cur = p.moves.find_all { |m| m && m.move }.map(&:move)
+    nat = natural_moves(p)
+    dmg = lambda { |m| (($cache.moves[m].basedamage.to_i rescue 0) > 1) }
+    keep = cur.find_all { |m| !nat.include?(m) }                                  # TM / tutor / egg moves stay
+    keep += cur.find_all { |m| !dmg.call(m) && KEEP_STATUS.include?(m) && !keep.include?(m) }.first(2)
+    keep = keep.first(4)
+    pool = (cur + (pbGetRelearnableMoves(p) rescue [])).uniq.find_all { |m| dmg.call(m) && !keep.include?(m) }
+    best = Array.new(team.length, 0.0)
+    keep.each { |m| team.each_with_index { |e, k| best[k] = [best[k], [hit_share(p, e, m), 1.2].min].max } }
+    picks = []
+    while keep.length + picks.length < 4
+      cand = (pool - picks).max_by { |m| team.each_with_index.sum { |e, k| [[hit_share(p, e, m), 1.2].min, best[k]].max - best[k] } + (cur.include?(m) ? 0.001 : 0) }
+      break if !cand
+      gain = team.each_with_index.sum { |e, k| [[hit_share(p, e, cand), 1.2].min, best[k]].max - best[k] }
+      if gain <= 0.01
+        # nothing adds coverage: fill with the strongest attacks left, then moves it already knows
+        rest = (pool - picks).sort_by { |m| [-team.sum { |e| [hit_share(p, e, m), 1.2].min }, cur.include?(m) ? 0 : 1] }
+        rest += (cur - keep - picks - rest).find_all { |m| !dmg.call(m) }
+        picks += rest.first(4 - keep.length - picks.length)
+        break
+      end
+      picks << cand
+      team.each_with_index { |e, k| best[k] = [best[k], [hit_share(p, e, cand), 1.2].min].max }
+    end
+    newset = (keep + picks).uniq.first(4)
+    return if newset.empty? || newset.sort_by(&:to_s) == cur.sort_by(&:to_s)
+    old = {}
+    p.moves.each { |m| old[m.move] = m if m && m.move }
+    mv = newset.map { |m| old[m] || PBMove.new(m) }
+    mv << nil while mv.length < 4
+    p.instance_variable_set(:@moves, mv)
+    (p.initZmoves(p.item, true) rescue nil) if ($cache.items[p.item].checkFlag?(:zcrystal) rescue false)
+  end
+
+  def self.hold_items
+    TYPE_BOOST.keys + GEM_TYPE.keys + [:EVIOLITE, :LEFTOVERS, :BLACKSLUDGE, :LIFEORB, :CHOICEBAND, :CHOICESPECS,
+    :CHOICESCARF, :ASSAULTVEST, :EXPERTBELT, :MUSCLEBAND, :WISEGLASSES, :AIRBALLOON, :WIDELENS, :ZOOMLENS, :LIGHTCLAY,
+    :BIGROOT, :FLAMEORB, :TOXICORB, :ROCKYHELMET, :FOCUSSASH, :SCOPELENS, :QUICKCLAW, :SHELLBELL, :SITRUSBERRY, :LUMBERRY]
+  end
+
+  # give each Pokemon in the party the best item from the bag / the Pokemon that went to the PC.
+  # Items it can't judge (Mega Stones, plates, Z-crystals...) are never taken away.
+  # Returns what's needed to put every item back after the fight.
+  def self.fight_items(party, outs)
+    mons = party + outs
+    orig = mons.map { |m| [m, m.item] }
+    gave = Hash.new(0)      # items put into the bag
+    party.each do |m|
+      cur = m.item
+      cs = cur ? hold_score(m, cur)[0].to_f : 0.0
+      next if cur && cs <= 0 && !hold_items.include?(cur)
+      cands = []
+      hold_items.each { |it| cands << [it, nil] if bag_qty(it) > 0 }
+      outs.each { |o| cands << [o.item, o] if o.item && hold_items.include?(o.item) }
+      best = cands.map { |it, src| [hold_score(m, it)[0].to_f, it, src] }.max_by { |sc, _, _| sc }
+      next if !best || best[0] <= cs + 0.2
+      _, it, src = best
+      if src
+        src.item = nil
+      else
+        $PokemonBag.pbDeleteItem(it)
+      end
+      if cur
+        $PokemonBag.pbStoreItem(cur)
+        gave[cur] += 1
+      end
+      (m.setItem(it) rescue (m.item = it))
+    end
+    return [orig, gave]
+  end
+
+  # after the fight: everyone gets their own item back (an item used up in the fight stays used up)
+  def self.items_back(back)
+    orig, gave = back
+    now = orig.map { |m, _| m.item }.compact.tally
+    want = orig.map { |_, it| it }.compact.tally
+    orig.each { |m, it| (m.setItem(it) rescue (m.item = it)) }
+    now.each { |it, n| (n - (want[it] || 0)).times { $PokemonBag.pbStoreItem(it) } }
+    want.each do |it, n|
+      miss = n - (now[it] || 0)
+      next if miss <= 0
+      miss.times do
+        if gave[it] > 0 && ($PokemonBag.pbQuantity(it) rescue 0) > 0
+          $PokemonBag.pbDeleteItem(it)
+          gave[it] -= 1
+        else
+          holder = orig.find { |m, o| o == it && m.item == it }
+          (holder[0].setItem(nil) rescue (holder[0].item = nil)) if holder     # it was used up in the fight
+        end
+      end
+    end
+  end
+
   # after the fight: offer to undo the switch (only Pokemon still where they were put)
   def self.swap_back
+    ib = $rh_itemback
+    $rh_itemback = nil
+    (items_back(ib) rescue nil) if ib
     sw = $rh_swapback
     $rh_swapback = nil
     return if !sw || sw.empty?
-    ch = (Kernel.pbMessage(_INTL("Put your old team back?"), [_INTL("Yes"), _INTL("No")], 2) rescue 1)
-    return if ch != 0
     sw.each do |o, p, b, i|
       pi = $Trainer.party.index(p)
       next if !pi
@@ -4208,6 +4346,12 @@ module RH
       $Trainer.party[pi] = o
       (p.heal rescue nil) if !($game_switches[:Nuzlocke_Mode] rescue false)
       $PokemonStorage[b, i] = p
+    end
+    # same order as before the switch
+    ord = $rh_partyorder
+    $rh_partyorder = nil
+    if ord && ord.length == $Trainer.party.length && ord.all? { |m| $Trainer.party.any? { |x| x.equal?(m) } }
+      $Trainer.party.replace(ord)
     end
   end
 
