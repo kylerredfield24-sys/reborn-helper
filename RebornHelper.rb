@@ -1,4 +1,4 @@
-RH_VERSION = 55   # bumped with every release (used by the auto-updater)
+RH_VERSION = 56   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -4722,6 +4722,7 @@ module RH
     [/HARDY.*\bbet\b|\bbet\b.*HARDY/m, "YES - take Hardy's bet (+1 Hardy)."],
     [/HARDY.*ready.*Meteor|Meteor.*ready.*HARDY/m, "YES (ready) = +1 Hardy."],
     [/Fund Project|fund the project|Project #/i, "YES = +1 Adrienn."],
+    [/small errand\s+before\s+we\s+battle/i, "YES: errand first - find volunteers around the city and send them to the gym. 10 = Wise Glasses, 15 = Wise Glasses + Ability Capsule + Star Piece. Then the battle.\nNO: straight to the gym battle."],
     [/Release\?/i, "Your call - this frees whoever is in the tube."]
   ]
 
@@ -4826,6 +4827,20 @@ module RH
     d = g
     return if !d || d[:hud] == false
     return if !(pbMapInterpreterRunning? rescue false)
+    # a text box with choices under it: the game shows both together from the text command,
+    # so the event's own choice command (the one the panel reads) is where the interpreter is now
+    it = ($game_system.map_interpreter rescue nil)
+    6.times do
+      ch = (it.instance_variable_get(:@child_interpreter) rescue nil)
+      break if !ch || !(ch.running? rescue false)
+      it = ch
+    end
+    lst = (it.instance_variable_get(:@list) rescue nil)
+    idx = (it.instance_variable_get(:@index) rescue nil)
+    if lst && idx && lst[idx] && lst[idx].code == 102
+      choice_show(lst, idx, ($game_map.map_id rescue 0), (it.instance_variable_get(:@event_id) rescue 0))
+      return if $rh_choice
+    end
     ev = ($game_system.map_interpreter.instance_variable_get(:@event_id) rescue 0)
     mid = ($game_map.map_id rescue 0)
     tip = ((updates[:choice] || {})[[mid, ev]] rescue nil)
