@@ -1,4 +1,4 @@
-RH_VERSION = 58   # bumped with every release (used by the auto-updater)
+RH_VERSION = 59   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -4019,6 +4019,15 @@ module RH
     end
   end
 
+  # a hand-written game plan for a hard fight (from updates.txt "boss|" lines), shown step by step before it
+  def self.boss_plan(plan)
+    steps = plan.split(" / ").map(&:strip).reject(&:empty?)
+    return if steps.empty?
+    steps.each_with_index do |st, i|
+      Kernel.pbMessage(_INTL("\\c[1]Plan {1}/{2}:\\c[0] {3}", i + 1, steps.length, st))
+    end
+  end
+
   def self.prebattle(type, name, pid)
     d = g
     return if !d || d[:battle] == false
@@ -4028,8 +4037,11 @@ module RH
     key = battle_key(type, name, pid)
     # gym leaders and story (cutscene) fights: offer the best team from your party AND your PC boxes first
     kind = big_fight_kind(type)
+    plan = ((updates[:boss] || {})[type.to_s.upcase] rescue nil)
+    kind ||= "Big fight" if plan
     if kind
       done = (team_switch_offer(team, name, kind) rescue false)
+      (boss_plan(plan) rescue nil) if plan
       if done
         $rh_last_fight = [key, ($Trainer.party.find { |p| p && !p.isEgg? && p.hp > 0 }.species rescue nil)]
         return
@@ -4664,6 +4676,7 @@ module RH
     guides = []
     notes = []
     updates[:choice] = {}
+    updates[:boss] = {}
     txt.each_line do |l|
       a = l.strip.split("|")
       next if a.empty?
@@ -4677,6 +4690,8 @@ module RH
         updates[:version] = a[1].to_i
       elsif a[0] == "choice" && a.length >= 4
         (updates[:choice] ||= {})[[a[1].to_i, a[2].to_i]] = a[3..-1].join("|")[0, 200]
+      elsif a[0] == "boss" && a.length >= 3
+        (updates[:boss] ||= {})[a[1].strip.upcase] = a[2..-1].join("|")[0, 600]
       elsif a[0] == "guide" && a.length >= 6
         guides << { :cond => a[1].to_s, :map => a[2].to_i, :x => a[3].to_i, :y => a[4].to_i, :text => a[5..-1].join("|")[0, 240] }
       elsif a[0] == "note" && a.length >= 2
