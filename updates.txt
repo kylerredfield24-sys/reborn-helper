@@ -1,4 +1,5 @@
-version|54
+version|55
+note|Choice help now shows for every story question that changes how a character feels about you (133 of them, read from the game): e.g. Fight: +1 Victoria, +1 Arc / Refuse: -1 Arc, -1 Victoria, +2 Adrienn.
 note|Better-team switch before gym / story fights: one short question. If you switch, the Pokemon from your PC jump to the level cap, everyone gets the best moves for that fight (only moves the Move Relearner can give back - TM moves are never dropped) and the best held items from your bag / the Pokemon sent to the PC. After the fight your old team, order and items come back by themselves; levels and moves stay.
 note|Story guide: the goal now only changes when your story moves forward (not when you walk into a new area), so it no longer sends you back and forth. Ame's errand after Ciel has exact steps checked against the game. If the helper can't find a real walking route it shows no dots instead of guessing - the step text says where to go.
 note|Walking path: fixed areas joined edge-to-edge (like Beryl Ward and Beryl Cemetery) - the dots were stuck on "finding the way" because the helper couldn't see those joins in the real game.

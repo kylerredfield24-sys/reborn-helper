@@ -1,4 +1,4 @@
-RH_VERSION = 54   # bumped with every release (used by the auto-updater)
+RH_VERSION = 55   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -4759,7 +4759,14 @@ module RH
         case c.code
         when 102 then e << "asks again"
         when 121 then e << "your choice is remembered" if c.parameters[2] == 0
-        when 122 then e << "story moves on" if STORY_VARS.include?(c.parameters[0])
+        when 122
+          pr = c.parameters
+          if STORY_VARS.include?(pr[0])
+            e << "story moves on"
+          elsif (who = rel_name(pr[0])) && pr[3] == 0 && [1, 2].include?(pr[2]) && pr[4].to_i != 0
+            amt = pr[2] == 1 ? pr[4].to_i : -pr[4].to_i
+            e << "#{amt > 0 ? "+" : ""}#{amt} #{who}"
+          end
         when 125 then e << (c.parameters[0] == 0 ? "you get money" : "costs money")
         when 201 then e << "you leave this spot"
         when 301 then e << "battle"
@@ -4774,7 +4781,18 @@ module RH
       end
       i += 1
     end
-    return eff.map { |e| e.uniq.first(3) }
+    return eff.map { |e| e.uniq.first(4) }
+  end
+
+  # "Arc" for the game variable called "Arc Relationship" (how much a character likes you)
+  def self.rel_name(var)
+    $rh_relnames ||= begin
+      names = ($data_system.variables rescue nil) || (load_data("Data/System.rxdata").variables rescue [])
+      h = {}
+      (names || []).each_with_index { |nm, i| h[i] = $1.strip if nm.to_s =~ /\A(.+?)\s+Relationship\z/i }
+      h
+    end
+    return $rh_relnames[var]
   end
 
   def self.choice_show(list, idx, map_id, event_id)
@@ -4792,7 +4810,7 @@ module RH
     tip = ((updates[:choice] || {})[[map_id, event_id]] rescue nil)
     tip ||= CHOICE_TIPS[[map_id, event_id]] || text_tip(said.join(" ")) || text_tip($rh_last_said.to_s)
     # only story questions get the panel (elevators, shops, menus etc. stay clean)
-    return if !tip && !eff.any? { |e| e.include?("story moves on") }
+    return if !tip && !eff.any? { |e| e.include?("story moves on") || e.any? { |x| x =~ /\A[+-]\d+ / } }
     lines = []
     lines << [tip, GOOD] if tip
     opts.each_with_index do |o, i|
