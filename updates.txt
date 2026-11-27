@@ -1,4 +1,5 @@
-version|52
+version|53
+note|Story guide: the goal now only changes when your story moves forward (not when you walk into a new area), so it no longer sends you back and forth. Ame's errand after Ciel has exact steps checked against the game. If the helper can't find a real walking route it shows no dots instead of guessing - the step text says where to go.
 note|Walking path: fixed areas joined edge-to-edge (like Beryl Ward and Beryl Cemetery) - the dots were stuck on "finding the way" because the helper couldn't see those joins in the real game.
 note|Side quest tracker: the Goal tab now shows how to get the Mega-Z Ring (ARC's quest stage, who still needs their Pokemon back, or the freemegaz password route) - pick the line to draw the route. A message pops up once each time it changes.
 note|Max Candy now finishes every evolution (Beldum goes all the way to Metagross). If a Pokemon is already at the cap but can still evolve (like a Metang at Lv 80), pick Max Candy again and it offers to evolve it.
@@ -49,3 +50,11 @@ guide|v276=27|467|12|11|Wiki step: Walk back up through the Water Treatment Cent
 guide|v276=28|-1|0|0|Wiki step: Go back up the waterfall to Celestinine Cascade (the top of the Water Treatment Center hall). Next stop after that: Fiore Mansion.
 guide|v276>=34&v276<=36&b<13|357|5|6|GYM NEXT - Ciel (badge 13, needed to use Fly): go to Agate Circus > Big Top > the room inside it, stand below Samson and talk to him (face up, press A). (Titania at the Cascade and Julia in the mansion are optional story talks.)
 guide|v276=37&b<13|357|3|7|GYM NEXT - Ciel: stand below Ciel in the Big Top's inside room, talk to her and pick Yes ("Shall we dance?") to start the gym battle. Heal first.
+# --- after Ciel: Ame's errand (story var 339), checked against the game's events ---
+guide|v276>=40&v339=0&s479|38|15|10|Go to the Grand Hall in Opal Ward and talk to Ame - pick Yes.
+guide|v339>=1&v339<=3&!a527,66|527|35|24|Find DJ Arclight (Arc) in North Obsidia Ward, right outside the Nightclub, and talk to him.
+guide|v339>=1&v339<=3&!a526,57|526|52|21|Find Adrienn in Coral Ward, right outside the Coral Gym, and talk to Adrienn.
+guide|v339>=1&v339<=3&!a552,35|552|10|22|Find Victoria in Beryl Cemetery (bottom-left corner) and talk to her.
+guide|v339=4|38|15|10|Go back to the Grand Hall in Opal Ward and talk to Ame.
+guide|v339=5|229|6|10|Arc is waiting in the Underground Railnet. Go down into the Railnet, follow the dots to Arc and walk up to him - pick Yes once you're healed and ready.
+guide|v339=6|622|9|6|Heal and save, then take the stairs at the west end of this Railnet tunnel down into Devon Corp B1F.

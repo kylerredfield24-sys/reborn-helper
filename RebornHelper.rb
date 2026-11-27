@@ -1,4 +1,4 @@
-RH_VERSION = 52   # bumped with every release (used by the auto-updater)
+RH_VERSION = 53   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -770,6 +770,45 @@ module RH
     return $Trainer.party.any? { |p| p && !p.isEgg? && p.moves.any? { |m| m && m.move == move } }
   end
 
+  def self.can_fly?
+    hm_ok?(:FLY, (BADGEFORFLY rescue 13), :GOLDENWINGS, :HM02)
+  end
+
+  # places Fly can take you (the town map's fly points) that you've already been to: [[name, map], ...]
+  def self.fly_spots
+    if !$rh_fly
+      $rh_fly = []
+      tm = ($cache.town_map rescue nil)
+      vals = tm.is_a?(Hash) ? tm.values : (tm.is_a?(Array) ? tm : [])
+      vals.each do |v|
+        fd = (v.flyData rescue nil)
+        next if !fd.is_a?(Array) || !fd[0].is_a?(Integer)
+        $rh_fly << [(v.name rescue nil).to_s, fd[0]]
+      end
+      $rh_fly.uniq!
+    end
+    return $rh_fly.find_all { |_, m| ($PokemonGlobal.visitedMaps[m] rescue false) }
+  end
+
+  # a long walk to another part of the city: say where Fly gets you closer
+  def self.fly_tip
+    return nil if !$game_map || !can_fly?
+    key, r = nav_want
+    return nil if !r || r[:map].to_i <= 0
+    here = $game_map.map_id
+    ck = [here, r[:map], $game_variables ? Graphics.frame_count / 400 : 0]
+    return $rh_flytip[1] if $rh_flytip && $rh_flytip[0] == ck
+    tip = nil
+    dist = static_dist([r[:map]])
+    dh = dist[here]
+    if dh && dh >= 4
+      best = fly_spots.find_all { |_, m| dist[m] }.min_by { |_, m| [dist[m], m] }
+      tip = "quicker: Fly to #{best[0].empty? ? mapname(best[1]) : best[0]}" if best && dist[best[1]] <= dh - 3
+    end
+    $rh_flytip = [ck, tip]
+    return tip
+  end
+
   def self.can_surf?
     hm_ok?(:SURF, (BADGEFORSURF rescue 10), :GOLDENSURFBOARD, :HM03)
   end
@@ -1073,12 +1112,29 @@ module RH
 
   # where you can stand to talk to someone at (x, y): next to them, or 2 away only when a real
   # counter tile is in between (the game lets you talk across counters - not across railings or walls)
+  # (only tiles you can really stand on: a wall tile next to someone used to count, so the dots could stop
+  #  diagonally from them - where pressing A does nothing)
   def self.talk_tiles(mid, x, y)
-    out = [[x, y], [x, y + 1], [x - 1, y], [x + 1, y], [x, y - 1]]
+    out = [[x, y]]
     [[0, 1], [-1, 0], [1, 0], [0, -1]].each do |dx, dy|
-      out << [x + 2 * dx, y + 2 * dy] if counter_at?(mid, x + dx, y + dy)
+      out << [x + dx, y + dy] if stand_ok?(mid, x + dx, y + dy)
+    end
+    [[0, 1], [-1, 0], [1, 0], [0, -1]].each do |dx, dy|
+      out << [x + 2 * dx, y + 2 * dy] if counter_at?(mid, x + dx, y + dy) && stand_ok?(mid, x + 2 * dx, y + 2 * dy)
     end
     return out
+  end
+
+  def self.stand_ok?(mid, x, y)
+    if mid == ($game_map.map_id rescue -1)
+      return false if !$game_map.valid?(x, y)
+      return [2, 4, 6, 8].any? { |d| $game_map.passable?(x, y, d) }
+    end
+    md = (model(mid) rescue nil)
+    return true if !md
+    return [2, 4, 6, 8].any? { |d| m_pass(md, x, y, d) }
+  rescue
+    return true
   end
 
   def self.counter_at?(mid, x, y)
@@ -1249,10 +1305,8 @@ module RH
   # smart plan first (real map data), then the simple map graph as a backup
   def self.route_to(targets, spot = nil)
     sure_no = true     # every search finished and found no way at all
-    nearest = nil
     [false, true, :people].each do |relax|
       pl = (plan(targets, spot, relax) rescue nil)
-      nearest ||= $rh_near if !pl
       sure_no = false if pl.nil?
       next if !pl
       path = tile_path(pl[1])
@@ -1266,31 +1320,6 @@ module RH
       lbl += " (push the boulders)" if relax == true
       lbl += " (walk around / talk to people in the way)" if relax == :people
       return [path, lbl]
-    end
-    # the game often has several copies of one place (before / after a story event):
-    # if this copy can't be reached, head for a copy of it that can
-    if !targets.any? { |t| twin_of?(t) }
-      names = targets.map { |t| mapname(t) }.uniq
-      twins = all_map_ids.find_all { |i| !targets.include?(i) && names.include?(mapname(i)) }
-      return [[], "you're in the right area"] if twins.include?($game_map.map_id)
-      if !twins.empty?
-        $rh_twin_try = true
-        begin
-          res = route_to(twins, spot)      # (same spot in the other copy - not just "anywhere" there)
-        ensure
-          $rh_twin_try = false
-        end
-        return res if res && !res[0].empty? && res[1] !~ /\Atowards /
-      end
-    end
-    # can't reach the exact spot yet (puzzle parts the helper doesn't model): walk to the closest point it CAN reach
-    if nearest
-      pl, near_map = nearest
-      path = tile_path(pl[1])
-      path = model_path(pl[1]) if path.empty?
-      if !path.empty?
-        return [path, "towards #{mapname(targets.first)} - first to #{mapname(near_map)}, the closest point the dots can reach"]
-      end
     end
     # double-check once with everything rebuilt fresh before ever saying "no way"
     if sure_no && !$rh_retry
@@ -1306,36 +1335,9 @@ module RH
       end
       return again
     end
-    # the full search looked everywhere: don't send you wandering, say so (and the goal gets re-picked)
-    if sure_no
-      # you're already at the closest point the dots can reach: the rest is a puzzle part - the step text says what to do
-      return [[], "follow the step above - the rest is a puzzle part the dots can't draw yet"]
-    end
-    bounced = ($rh_hist || []).tally.select { |m, n| n >= 2 }.keys
-    hop = next_hop($game_map.map_id, targets)
-    hop = nil if hop && (bounced.include?(hop) || (($rh_hist || [])[-3] == hop && ($rh_hist || [])[-2] == $game_map.map_id))
-    if hop
-      path = tile_path(goal_tiles(hop))
-      return [path, mapname(hop)] if !path.empty?
-    end
-    # never leave you without a line: walk to the exit of this area that leads closest to the goal
-    begin
-      md = model($game_map.map_id)
-      f = m_flood(md, $game_player.x, $game_player.y)
-      dist = static_dist(targets)
-      exits = m_exits(md, f).reject { |e| (e[0] == $game_map.map_id && !targets.include?(e[0])) }
-      recent = ($rh_hist || [])[0..-2]
-      # never ping-pong: places you were just in go last, places you keep bouncing between are dropped
-      exits = exits.reject { |e| bounced.include?(e[0]) && e[0] != $game_map.map_id }
-      exits = exits.sort_by { |e| [recent.include?(e[0]) ? 1 : 0, dist[e[0]] || 99, e[0] == $rh_came_from ? 1 : 0] }
-      exits.first(6).each do |e|
-        path = tile_path(e[3])
-        path = model_path(e[3]) if path.empty?
-        return [path, "towards #{mapname(targets.first)} via #{mapname(e[0])}"] if !path.empty?
-      end
-    rescue
-    end
-    return [[], "follow the step above - the way there goes through a puzzle part the dots can't draw yet"]
+    # no guessing: only a route the real search found gets dots - otherwise the step text says what to do
+    return [[], sure_no ? "no walkable way found from here - follow the step text above" :
+                          "too far to work out the walk from here - follow the step text above"]
   end
 
   def self.twin_of?(id)
@@ -1647,8 +1649,16 @@ module RH
     spec = {}
     facing = {}
     chain = {}      # dir => true while more player moves in the same branch keep adding to the same jump
+    choice = nil    # inside a Yes / No answer: moves there come from talking to someone, not from a pad
     list.each do |q|
-      if q.code == 111 && q.parameters[0] == 6 && q.parameters[1] == -1
+      if q.code == 402 || q.code == 403
+        choice = q.indent
+        chain = {}
+      elsif q.code == 404
+        choice = nil
+      elsif choice && q.indent > choice
+        next
+      elsif q.code == 111 && q.parameters[0] == 6 && q.parameters[1] == -1
         facing[q.indent] = q.parameters[2]
         chain = {}
       elsif q.code == 111 || q.code == 411 || q.code == 412
@@ -2375,7 +2385,7 @@ module RH
     dist = {}
     targets.each { |t| dist[t] = 0 }
     rev = {}
-    warps.each_key do |a|
+    (warps.keys | conn_list.map { |c| c[0] } | conn_list.map { |c| c[3] }).each do |a|
       neighbors(a).each { |b| (rev[b] ||= []) << a }
       slice!
     end
@@ -2659,7 +2669,7 @@ module RH
   end
 
   def self.live_step
-    k = [STORY_VARS.map { |v| ($game_variables[v] rescue 0) }, ($game_map.map_id rescue 0), ($game_self_switches.instance_variable_get(:@data).length rescue 0)]
+    k = [STORY_VARS.map { |v| ($game_variables[v] rescue 0) }, ($game_self_switches.instance_variable_get(:@data).length rescue 0)]
     busy = (pbMapInterpreterRunning? rescue false)
     if $rh_live && ($rh_live[0] == k || busy)   # during a cutscene keep the old answer, re-check after it ends
       r = $rh_live[1]
@@ -2702,10 +2712,21 @@ module RH
       same = groups.find_all { |gp| gp.any? { |c| c[:to] <= t0 } }
       pickg = same.first(6).map { |gp| gp.find_all { |c| reachable_spot?(c) } }.find { |gp| !gp.empty? }
       cs = pickg || groups.first
-      mine = cs.find_all { |c| c[:map] == here }
-      cs = mine if !mine.empty?
-      r = cs.min_by { |c| (c[:map] == here ? 0 : 1000) + (c[:x] - px).abs + (c[:y] - py).abs }
-      r[:count] = cs.length
+      all = cs
+      # keep heading to the same person while they're still on the list - picking again in every new
+      # area (by a rough guess of what's closest) sent you back and forth between places
+      pk = $rh_add_pick
+      r = pk && cs.find { |c| [c[:v], c[:map], c[:id]] == pk }
+      # otherwise the one the fewest areas away (then the closest on this map)
+      r ||= cs.min_by do |c|
+        if c[:map] == here
+          (c[:x] - px).abs + (c[:y] - py).abs
+        else
+          1000 * ((static_dist([c[:map]])[here] rescue nil) || 60) + c[:id]
+        end
+      end
+      $rh_add_pick = [r[:v], r[:map], r[:id]]
+      r[:count] = all.length
       return r
     end
     return nil
@@ -2804,10 +2825,12 @@ module RH
     place = "this area" if r[:map] == ($game_map.map_id rescue -1)
     where = (where_text(r) rescue "")
     wh = where.empty? ? "" : " (#{where})"
-    if r[:add]
-      return "Ask around #{place}: talk to the people the route points to#{r[:count] > 1 ? " (#{r[:count]} to check)" : ""}."
-    end
     who = r[:sp].to_s.strip
+    if r[:add]
+      more = r[:count].to_i > 1 ? " (#{r[:count] - 1} more to find after this one)" : ""
+      pl = r[:map] == ($game_map.map_id rescue -1) ? "here#{wh}" : "in #{mapname(r[:map])}#{wh}"
+      return gym_next_text(r) + (who.empty? ? "Talk to the person the dots lead to #{pl}#{more}." : "Find #{who} #{pl} and talk to them#{more}.")
+    end
     t = case r[:trig]
         when 0 then who.empty? ? "Check the marked spot in #{place}#{wh} (press A)." : "Talk to #{who} in #{place}#{wh}."
         when 1, 2 then "Walk onto the marked spot in #{place}#{wh}" + (who.empty? ? "." : " - #{who} is there.")
@@ -4485,6 +4508,8 @@ module RH
     c.split("&").all? do |t|
       if t =~ /\A(!?)s(\d+)\z/
         sw?($2.to_i) == ($1 != "!")
+      elsif t =~ /\A(!?)a(\d+),(\d+)\z/              # self switch A of event on map (someone you already talked to)
+        (($game_self_switches[[$2.to_i, $3.to_i, "A"]] rescue false) ? true : false) == ($1 != "!")
       elsif t =~ /\A(!?)m(\d+)\z/                     # you're on this map
         (($game_map.map_id rescue 0) == $2.to_i) == ($1 != "!")
       elsif t =~ /\A(!?)e(\d+)=(\d+),(\d+)\z/        # an event on this map (e.g. a rubbish pile) is at x,y
@@ -4818,6 +4843,8 @@ module RH
     if nav
       lbl = nav[1].to_s =~ /\A(towards|follow|you're|story|dark|surface|finding|no way)/ ? nav[1] : "to #{nav[1]}"
       route = nav[0].empty? ? "Route: #{nav[1]}" : "Route: #{lbl}  (#{nav[0].length - 1} steps)"
+      fh = (fly_tip rescue nil)
+      route += " - #{fh}" if fh
     end
     obj = nil if !d[:hud]
     route = nil if !d[:hud]
@@ -4830,7 +4857,7 @@ module RH
       font(b)
       lines = []
       lines += wrap(b, obj, 140).first(5).map { |l| [l, TXT] } if obj
-      lines += wrap(b, route, 140).first(2).map { |l| [l, ACCENT] } if route
+      lines += wrap(b, route, 140).first(3).map { |l| [l, ACCENT] } if route
       lines << ["Update ready - restart game", GOOD] if (RH.updates[:selfupdate] rescue nil)
       (draw_water_map(b, wkey) rescue nil) if wkey
       if !lines.empty?

@@ -346,7 +346,7 @@ end
 if res
   path, label = res
   puts "route: #{label}  #{path.length} tiles  (#{secs}s)"
-  puts "       from #{path.first.inspect} to #{path.last.inspect}" if !path.empty?
+  puts "       path #{path.inspect}" if !path.empty?
   puts "chain: #{($rh_plan_chain || []).map { |m| "#{RH.mapname(m)}(#{m})" }.join(' > ')}"
   puts "search: #{$rh_search_info}"
   puts "plan error: #{$rh_plan_err}" if $rh_plan_err
