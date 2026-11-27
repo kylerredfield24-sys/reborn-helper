@@ -1,4 +1,4 @@
-RH_VERSION = 61   # bumped with every release (used by the auto-updater)
+RH_VERSION = 62   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -4080,6 +4080,7 @@ module RH
         v = case t
             when "*" then true
             when "TR" then tr
+            when "LOW" then me.hp * 2 < me.totalhp
             else me.species.to_s == t.upcase
             end
         neg ? !v : v
