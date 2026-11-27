@@ -1,4 +1,4 @@
-RH_VERSION = 63   # bumped with every release (used by the auto-updater)
+RH_VERSION = 64   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -3231,7 +3231,7 @@ module RH
     me = a[:me]
     foe = a[:foes][0]
     hit = foe_max_hit(battle, foe, me)
-    first = faster?(me, foe, battle)
+    first = faster?(me, foe, battle) && !foe_prio_ko(battle, foe, me)
     st = status_of(me)
     stuck = false          # (sleep / freeze turns are counted in the fight itself)
     opts = []
@@ -3674,11 +3674,88 @@ module RH
     return nil
   end
 
+  SELF_SETUP = [:SWORDSDANCE, :NASTYPLOT, :CALMMIND, :DRAGONDANCE, :QUIVERDANCE, :BULKUP, :SHELLSMASH, :IRONDEFENSE,
+                :AGILITY, :ROCKPOLISH, :AUTOTOMIZE, :COSMICPOWER, :AMNESIA, :CURSE, :COIL, :WORKUP, :GROWTH, :AQUARING, :INGRAIN]
+  SCREENS = [:LIGHTSCREEN, :REFLECT, :AURORAVEIL]
+
+  def self.prio_of(user, m)
+    (m.priorityCheck(user) rescue (m.priority rescue 0)).to_i
+  end
+
+  def self.contact?(m)
+    (m.contactMove? rescue false)
+  end
+
+  # the foe's fastest move that KOs you this turn with priority (Bullet Punch, Shadow Sneak...)
+  def self.foe_prio_ko(battle, foe, me)
+    foe.moves.each do |m|
+      next if !m || !m.move || m.pp <= 0 || prio_of(foe, m) <= 0
+      lo, hi = dmg(battle, foe, me, m)
+      return m if hi >= me.hp
+    end
+    return nil
+  end
+
+  # smarter picks: shields, priority moves, King's Shield contact
+  def self.smart_advice(battle, a)
+    return nil if a[:foes].length != 1
+    me = a[:me]
+    foe = a[:foes][0]
+    usable = me.moves.find_all { |m| m && m.move && m.pp > 0 }
+    # 1) they're behind a shield this turn (Magical Seed / Protect): don't waste a hit
+    if foe.effects[:Protect] && foe.effects[:Protect] != false && foe.effects[:Protect] != 0
+      tr = usable.find { |m| m.move == :TRICKROOM } if !faster?(me, foe, battle) && (battle.trickroom rescue 0).to_i <= 0
+      dg = a[:danger]
+      if !tr && dg
+        spc = special_move?(dg[2], dg[3])
+        sc = usable.find { |m| m.move == (spc ? :LIGHTSCREEN : :REFLECT) || m.move == :AURORAVEIL }
+        sc = nil if sc && side_fx(battle, me.index, spc ? :LightScreen : :Reflect) > 0
+      end
+      su = usable.find { |m| SELF_SETUP.include?(m.move) }
+      pick = tr || sc || su
+      return ["Use #{mname(pick.move)} - they're shielded this turn, attacks do nothing", GOOD] if pick
+      nc = usable.find { |m| m.basedamage.to_i > 0 && !contact?(m) }
+      return ["Use #{mname(nc.move)} - they're shielded this turn (no contact, so no Attack drop)", WARN] if nc
+    end
+    dg = a[:danger]
+    dies = dg && dg[0] >= me.hp
+    # 2) you have a priority move that KOs before they can move
+    if dies && !faster?(me, foe, battle)
+      usable.each do |m|
+        next if m.basedamage.to_i <= 0 || prio_of(me, m) <= prio_of(foe, dg[3])
+        lo, hi = dmg(battle, me, foe, m)
+        return ["Use #{mname(m.move)} - goes first and KOs", GOOD] if lo >= foe.hp
+      end
+    end
+    # 3) you're faster, but their priority move KOs you first
+    if faster?(me, foe, battle) && (pm = foe_prio_ko(battle, foe, me))
+      b = a[:best]
+      if !(b && b[5] == 2 && prio_of(me, me.moves.find { |m| m && mname(m.move) == b[1][:name] }) > prio_of(foe, pm))
+        sw = (rank_switches(battle, me.index).find { |o| !o[:faints] } rescue nil)
+        return ["Switch to #{sw[:mon].name} - their #{mname(pm.move)} goes first and KOs", WARN] if sw && !(b && b[5] == 2)
+      end
+    end
+    # 4) King's Shield: contact moves get your Attack cut - use a non-contact move if it's nearly as strong
+    if foe.moves.any? { |m| m && m.move == :KINGSSHIELD && m.pp > 0 } && (foe.effects[:ProtectRate] rescue 0).to_i <= 1
+      b = a[:best]
+      bm = b && usable.find { |m| mname(m.move) == b[1][:name] }
+      if bm && contact?(bm) && b[5] != 2
+        alt = usable.select { |m| m.basedamage.to_i > 0 && !contact?(m) }.map { |m| [m, dmg(battle, me, foe, m)[0]] }.max_by { |x| x[1] }
+        if alt && alt[1] * 4 >= b[3] * 3
+          return ["Use #{mname(alt[0].move)} - it may King's Shield (contact drops your Attack)", GOOD]
+        end
+      end
+    end
+    return nil
+  end
+
   def self.advice(battle, a)
     ba = (boss_advice(battle, a) rescue nil)
     return ba if ba
     sa = (status_advice(battle, a) rescue nil)
     return sa if sa
+    sm = (smart_advice(battle, a) rescue nil)
+    return sm if sm
     me0 = a[:me]
     b0 = a[:best]
     # a clean KO this turn that they can't stop: just do it
@@ -3772,7 +3849,8 @@ module RH
       (a[:megas] || []).each { |f| lines << ["#{short(f.name, 9)} will Mega Evolve first (numbers use the Mega)", "", WARN] }
       if a[:danger]
         hi, lo, f, m = a[:danger]
-        who = faster?(me, f, battle) ? "You're faster." : "#{short(f.name, 7)} is faster."
+        pk = faster?(me, f, battle) && (foe_prio_ko(battle, f, me) rescue nil)
+        who = pk ? "#{short(f.name, 7)} goes first (#{mname(pk.move)})." : (faster?(me, f, battle) ? "You're faster." : "#{short(f.name, 7)} is faster.")
         if hi >= me.hp
           lines << ["#{who} It can KO you", "", BAD]
         else
