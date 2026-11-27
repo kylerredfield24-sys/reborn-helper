@@ -1,4 +1,4 @@
-RH_VERSION = 60   # bumped with every release (used by the auto-updater)
+RH_VERSION = 61   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -3660,6 +3660,8 @@ module RH
   end
 
   def self.advice(battle, a)
+    ba = (boss_advice(battle, a) rescue nil)
+    return ba if ba
     sa = (status_advice(battle, a) rescue nil)
     return sa if sa
     me0 = a[:me]
@@ -4019,13 +4021,72 @@ module RH
     end
   end
 
-  # a hand-written game plan for a hard fight (from updates.txt "boss|" lines), shown step by step before it
-  def self.boss_plan(plan)
-    steps = plan.split(" / ").map(&:strip).reject(&:empty?)
-    return if steps.empty?
-    steps.each_with_index do |st, i|
-      Kernel.pbMessage(_INTL("\\c[1]Plan {1}/{2}:\\c[0] {3}", i + 1, steps.length, st))
+  # "PORYGON2:+TRICKROOM-MAGNETRISE,RHYPERIOR": who goes first (in order) and moves to teach (from your TMs)
+  def self.boss_setup(spec)
+    want = spec.split(",").map do |w|
+      sp, mv = w.strip.split(":")
+      add = mv.to_s[/\+(\w+)/, 1]
+      drop = mv.to_s[/-(\w+)/, 1]
+      [sp.to_s.upcase.to_sym, add && add.upcase.to_sym, drop && drop.upcase.to_sym]
     end
+    party = $Trainer.party
+    mons = want.map { |sp, _, _| party.find { |p| p && !p.isEgg? && p.species == sp } }
+    missing = want.each_with_index.select { |_, i| !mons[i] }.map { |w, _| w[0].to_s.capitalize }
+    parts = []
+    teach = []
+    want.each_with_index do |(sp, add, drop), i|
+      p = mons[i]
+      next if !p || !add || p.moves.any? { |m| m && m.move == add }
+      tm = ($PokemonBag.pockets.flatten rescue []).find { |it| (pbGetTM(it.is_a?(Array) ? it[0] : it) rescue nil) == add }
+      tm = tm[0] if tm.is_a?(Array)
+      next if !tm && !(pbGetRelearnableMoves(p).include?(add) rescue false)
+      slot = p.moves.index { |m| m && m.move == drop } || p.moves.index { |m| m.nil? || m.move.nil? } || 3
+      teach << [p, add, slot]
+      old = p.moves[slot] && p.moves[slot].move
+      parts << "#{p.name} learns #{(getMoveName(add) rescue add.to_s)}#{old ? " (forgets #{(getMoveName(old) rescue old.to_s)})" : ""}"
+    end
+    order = mons.compact
+    need_order = order.each_with_index.any? { |p, i| !party[i].equal?(p) }
+    parts << order.map(&:name).join(", then ") + " first" if need_order && !order.empty?
+    Kernel.pbMessage(_INTL("\\c[1]Put {1} in your party for this fight.", missing.join(" and "))) if !missing.empty?
+    return if parts.empty?
+    ch = (Kernel.pbMessage(_INTL("\\c[1]Set up your team for this fight?\\c[0] {1}.", parts.join("; ")),
+                           [_INTL("Keep as is"), _INTL("Set up")], 1) rescue 0)
+    return if ch != 1
+    $rh_partyorder = party.dup
+    teach.each do |p, add, slot|
+      mv = p.moves.dup
+      mv[slot] = PBMove.new(add)
+      p.instance_variable_set(:@moves, mv)
+    end
+    rest = party.reject { |p| order.any? { |o| o.equal?(p) } }
+    party.replace(order + rest)
+  end
+
+  # this turn's move for a fight with a hand-made plan ("bossturn|" lines: SPECIES&TR=Move;...)
+  def self.boss_advice(battle, a)
+    return nil if !$rh_boss
+    rules = ((updates[:bossturn] || {})[$rh_boss] rescue nil)
+    return nil if !rules
+    me = a[:me]
+    tr = ((battle.trickroom rescue 0).to_i > 0)
+    rules.split(";").each do |r|
+      cond, text = r.split("=", 2)
+      next if !text
+      ok = cond.split("&").all? do |t|
+        t = t.strip
+        neg = t.start_with?("!")
+        t = t[1..-1] if neg
+        v = case t
+            when "*" then true
+            when "TR" then tr
+            else me.species.to_s == t.upcase
+            end
+        neg ? !v : v
+      end
+      return [text.strip, GOOD] if ok
+    end
+    return nil
   end
 
   def self.prebattle(type, name, pid)
@@ -4037,11 +4098,16 @@ module RH
     key = battle_key(type, name, pid)
     # gym leaders and story (cutscene) fights: offer the best team from your party AND your PC boxes first
     kind = big_fight_kind(type)
-    plan = ((updates[:boss] || {})[type.to_s.upcase] rescue nil)
-    kind ||= "Big fight" if plan
+    $rh_boss = nil
+    spec = ((updates[:bossteam] || {})[type.to_s.upcase] rescue nil)
+    if spec
+      # a hard fight with a hand-made plan: set the team up for it (and the battle panel says what to do each turn)
+      $rh_boss = type.to_s.upcase
+      (boss_setup(spec) rescue nil)
+      return
+    end
     if kind
       done = (team_switch_offer(team, name, kind) rescue false)
-      (boss_plan(plan) rescue nil) if plan
       if done
         $rh_last_fight = [key, ($Trainer.party.find { |p| p && !p.isEgg? && p.hp > 0 }.species rescue nil)]
         return
@@ -4389,7 +4455,14 @@ module RH
     (items_back(ib) rescue nil) if ib
     sw = $rh_swapback
     $rh_swapback = nil
-    return if !sw || sw.empty?
+    if !sw || sw.empty?
+      ord = $rh_partyorder
+      $rh_partyorder = nil
+      if ord && ord.length == $Trainer.party.length && ord.all? { |m| $Trainer.party.any? { |x| x.equal?(m) } }
+        $Trainer.party.replace(ord)      # same Pokemon, just put back in your order
+      end
+      return
+    end
     sw.each do |o, p, b, i|
       pi = $Trainer.party.index(p)
       next if !pi
@@ -4428,6 +4501,7 @@ module RH
   end
 
   def self.postbattle(won)
+    $rh_boss = nil
     (swap_back rescue nil)
     return if !$rh_last_fight
     key, sp = $rh_last_fight
@@ -4676,7 +4750,8 @@ module RH
     guides = []
     notes = []
     updates[:choice] = {}
-    updates[:boss] = {}
+    updates[:bossteam] = {}
+    updates[:bossturn] = {}
     txt.each_line do |l|
       a = l.strip.split("|")
       next if a.empty?
@@ -4690,8 +4765,10 @@ module RH
         updates[:version] = a[1].to_i
       elsif a[0] == "choice" && a.length >= 4
         (updates[:choice] ||= {})[[a[1].to_i, a[2].to_i]] = a[3..-1].join("|")[0, 200]
-      elsif a[0] == "boss" && a.length >= 3
-        (updates[:boss] ||= {})[a[1].strip.upcase] = a[2..-1].join("|")[0, 600]
+      elsif a[0] == "bossteam" && a.length >= 3
+        (updates[:bossteam] ||= {})[a[1].strip.upcase] = a[2..-1].join("|")[0, 300]
+      elsif a[0] == "bossturn" && a.length >= 3
+        (updates[:bossturn] ||= {})[a[1].strip.upcase] = a[2..-1].join("|")[0, 600]
       elsif a[0] == "guide" && a.length >= 6
         guides << { :cond => a[1].to_s, :map => a[2].to_i, :x => a[3].to_i, :y => a[4].to_i, :text => a[5..-1].join("|")[0, 240] }
       elsif a[0] == "note" && a.length >= 2
