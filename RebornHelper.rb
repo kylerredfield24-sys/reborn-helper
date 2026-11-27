@@ -1,4 +1,4 @@
-RH_VERSION = 62   # bumped with every release (used by the auto-updater)
+RH_VERSION = 63   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -3438,6 +3438,10 @@ module RH
     return if list.empty?
     font(bmp)
     lines = [["Best switch-in", "", ACCENT]]
+    if (bm = (boss_send(battle, list) rescue nil))
+      draw_lines(bmp, [["Send in #{bm.name}", "", GOOD]], 168)
+      return
+    end
     list.first(5).each_with_index do |o, i|
       col = o[:faints] ? BAD : (i == 0 ? GOOD : TXT)
       lines << [(i == 0 && !o[:faints] ? "> " : "") + "#{o[:mon].name} #{o[:hp]}%", o[:word], col]
@@ -3567,6 +3571,7 @@ module RH
   end
 
   # strategy layer: screens, free switches (immunities), sacrificing for a safe switch-in, recoil
+  HEAL_MOVES = [:RECOVER, :ROOST, :SOFTBOILED, :SLACKOFF, :MILKDRINK, :MOONLIGHT, :SYNTHESIS, :MORNINGSUN, :SHOREUP, :HEALORDER, :STRENGTHSAP]
   def self.strategy(battle, a)
     me = a[:me]
     best = a[:best]
@@ -3587,6 +3592,16 @@ module RH
         sm = me.moves.find { |m| m && m.move && want.include?(m.move) && m.pp > 0 }
         return ["Set #{mname(sm.move)} - halves #{short(foe.name)}'s #{spc ? 'special' : 'physical'} hits for 5 turns", GOOD] if sm
       end
+    end
+    # 1b) Trick Room: they're faster, you live their hit -> you move first for 5 turns
+    if !faster?(me, foe, battle) && hit < me.hp && (battle.trickroom rescue 0).to_i <= 0
+      trm = me.moves.find { |m| m && m.move == :TRICKROOM && m.pp > 0 }
+      return ["Use Trick Room - you move first for 5 turns", GOOD] if trm
+    end
+    # 1c) heal with a move when low and the heal outpaces their best hit
+    hm = me.moves.find { |m| m && m.pp > 0 && HEAL_MOVES.include?(m.move) }
+    if hm && me.hp * 2 < me.totalhp && hit * 2 < me.totalhp && (hit < me.hp || faster?(me, foe, battle))
+      return ["Use #{mname(hm.move)} - heals half, they can't keep up", GOOD]
     end
     # 2) a teammate is immune to the move they're about to use -> free switch
     if (dies || big)
@@ -3725,9 +3740,14 @@ module RH
     lines = []
     if full
       # Fight screen: each move vs each foe (KO / % of their current HP)
+      adv = (advice(battle, a) rescue nil)
+      pick = adv && a[:rows].find { |r| adv[0] =~ /\A(?:Use|Set|Attack(?: now)?:)\s+#{Regexp.escape(r[:name])}\b/ }
+      if pick && !(a[:best] && a[:best][1].equal?(pick)) && adv[0].include?(" - ")
+        lines << [adv[0][/ - (.*)\z/, 1], "", GOOD]
+      end
       a[:rows].each do |r|
         segs = r[:vs].map { |f, lo, hi| dtag(f, lo, hi) }
-        best = a[:best] && a[:best][1].equal?(r)
+        best = pick ? pick.equal?(r) : (a[:best] && a[:best][1].equal?(r))
         col = best ? GOOD : (r[:pp] <= 0 ? DIM : TXT)
         lines << [(best ? "> " : "") + r[:name], segs.join("  "), col]
         if r[:ally]
@@ -4023,6 +4043,15 @@ module RH
 
   # "PORYGON2:+TRICKROOM-MAGNETRISE,RHYPERIOR": who goes first (in order) and moves to teach (from your TMs)
   def self.boss_setup(spec)
+    keep = spec.split(",").select { |w| w.strip.end_with?("?") }.map { |w| w.strip.chomp("?").upcase.to_sym }
+    need_rev = spec[/\$REVIVE(\d+)/, 1].to_i
+    spec = spec.split(",").reject { |w| w.strip.end_with?("?") || w.strip.start_with?("$") }.join(",")
+    party0 = $Trainer.party
+    miss0 = keep.reject { |sp| party0.any? { |p| p && !p.isEgg? && p.species == sp } }.map { |sp| sp.to_s.capitalize }
+    have = $PokemonBag ? bag_qty(:REVIVE) + bag_qty(:MAXREVIVE) : 0
+    Kernel.pbMessage(_INTL("\\c[1]Put {1} in your party for this fight.", miss0.join(" and "))) if !miss0.empty?
+    Kernel.pbMessage(_INTL("\\c[1]Bring at least {1} Revives for this fight (you have {2}).", need_rev, have)) if need_rev > have
+    return if spec.strip.empty?
     want = spec.split(",").map do |w|
       sp, mv = w.strip.split(":")
       add = mv.to_s[/\+(\w+)/, 1]
@@ -4064,12 +4093,37 @@ module RH
   end
 
   # this turn's move for a fight with a hand-made plan ("bossturn|" lines: SPECIES&TR=Move;...)
-  def self.boss_advice(battle, a)
-    return nil if !$rh_boss
-    rules = ((updates[:bossturn] || {})[$rh_boss] rescue nil)
-    return nil if !rules
-    me = a[:me]
-    tr = ((battle.trickroom rescue 0).to_i > 0)
+  def self.revive_item
+    return nil if !$PokemonBag
+    [:REVIVE, :MAXREVIVE].find { |i| bag_qty(i) > 0 }
+  end
+
+  # a fainted party Pokemon to revive (anyone but `keep` first)
+  def self.boss_fainted(keep = nil)
+    dead = $Trainer.party.select { |p| p && !p.isEgg? && p.hp <= 0 }
+    dead.find { |p| p.species.to_s != keep.to_s } || dead.first
+  end
+
+  # one token of a "bossturn|"/"bosssend|" rule
+  def self.boss_tok(battle, me, t)
+    foe = (battle.battlers.find { |b| b && (b.index & 1) == 1 && b.hp > 0 } rescue nil)
+    case t
+    when "*" then true
+    when "TR" then (battle.trickroom rescue 0).to_i > 0
+    when "LOW" then me && me.hp * 2 < me.totalhp
+    when "FAINTED" then !!(boss_fainted && revive_item)
+    when /\APP0:(\w+)\z/
+      mv = foe && foe.moves.find { |m| m && m.move.to_s == $1.upcase }
+      !mv || mv.pp <= 0
+    when /\AFAINT:(\w+)\z/
+      sp = $1.upcase
+      !!revive_item && $Trainer.party.any? { |p| p && !p.isEgg? && p.species.to_s == sp && p.hp <= 0 }
+    else
+      me && me.species.to_s == t.upcase
+    end
+  end
+
+  def self.boss_match(battle, me, rules)
     rules.split(";").each do |r|
       cond, text = r.split("=", 2)
       next if !text
@@ -4077,17 +4131,49 @@ module RH
         t = t.strip
         neg = t.start_with?("!")
         t = t[1..-1] if neg
-        v = case t
-            when "*" then true
-            when "TR" then tr
-            when "LOW" then me.hp * 2 < me.totalhp
-            else me.species.to_s == t.upcase
-            end
+        v = boss_tok(battle, me, t)
         neg ? !v : v
       end
-      return [text.strip, GOOD] if ok
+      return text.strip if ok
     end
     return nil
+  end
+
+  # this turn's move for a fight with a hand-made plan ("bossturn|" lines: SPECIES&TR=Move;...)
+  def self.boss_advice(battle, a)
+    return nil if !$rh_boss
+    rules = ((updates[:bossturn] || {})[$rh_boss] rescue nil)
+    return nil if !rules
+    me = a[:me]
+    rules.split(";").each do |r|
+      t = boss_match(battle, me, r)
+      next if !t
+      # never tell you to switch to someone who has fainted or is already out
+      if (w = t[/\ASwitch to (\w+)/, 1])
+        ok = $Trainer.party.any? { |p| p && !p.isEgg? && p.hp > 0 && p.name.downcase == w.downcase && !(me.pokemon.equal?(p) rescue false) }
+        next if !ok
+      end
+      t = t.gsub("{revive}") { iname(revive_item) rescue "Revive" }
+      t = t.gsub("{fainted}") { (boss_fainted(t[/on (\w+)/, 1]).name rescue "a fainted one") }
+      t = t.gsub("{best}") { a[:best] ? a[:best][1][:name] : "your strongest move" }
+      return [t, GOOD]
+    end
+    return nil
+  end
+
+  # who to send in after a faint in a hand-made-plan fight ("bosssend|": SPECIES or !SPECIES = anyone but)
+  def self.boss_send(battle, list)
+    return nil if !$rh_boss
+    rules = ((updates[:bosssend] || {})[$rh_boss] rescue nil)
+    return nil if !rules
+    t = boss_match(battle, nil, rules)
+    return nil if !t
+    if t.start_with?("!")
+      o = list.find { |x| x[:mon].species.to_s != t[1..-1].upcase }
+    else
+      o = list.find { |x| x[:mon].species.to_s == t.upcase }
+    end
+    return o && o[:mon]
   end
 
   def self.prebattle(type, name, pid)
@@ -4753,6 +4839,7 @@ module RH
     updates[:choice] = {}
     updates[:bossteam] = {}
     updates[:bossturn] = {}
+    updates[:bosssend] = {}
     txt.each_line do |l|
       a = l.strip.split("|")
       next if a.empty?
@@ -4768,6 +4855,8 @@ module RH
         (updates[:choice] ||= {})[[a[1].to_i, a[2].to_i]] = a[3..-1].join("|")[0, 200]
       elsif a[0] == "bossteam" && a.length >= 3
         (updates[:bossteam] ||= {})[a[1].strip.upcase] = a[2..-1].join("|")[0, 300]
+      elsif a[0] == "bosssend" && a.length >= 3
+        (updates[:bosssend] ||= {})[a[1].strip.upcase] = a[2..-1].join("|")[0, 300]
       elsif a[0] == "bossturn" && a.length >= 3
         (updates[:bossturn] ||= {})[a[1].strip.upcase] = a[2..-1].join("|")[0, 600]
       elsif a[0] == "guide" && a.length >= 6

@@ -1,7 +1,9 @@
-version|62
+version|63
+note|Reshiram: new plan (nothing on your team survives its first hit). Drain its Blue Flare / Dragon Pulse by reviving every turn, then Rhyperior hits it with Rock Wrecker while it charges Solar Beam. The panel says what to use and who to send in.
+note|Fight screen now marks support moves (Trick Room, Recover, Light Screen...) with > when they're the better play, not just the strongest hit.
+note|Fixed: the panel could tell you to switch to a Pokemon that had fainted.
 note|Battle panel in hard fights: just the one thing to do this turn.
 note|Hard fights: the helper sets your team up for you (order + the move to learn) and the battle panel says what to do each turn. First one: Reshiram.
-note|Reshiram battle plan updated: Trick Room with Porygon2, then Rhyperior moves first.
 note|Hard fights get a step-by-step battle plan before they start (first one: the Reshiram battle).
 note|Route search: a fast first pass that just follows doors and warps - long chains of train cars and rooms now get dots. Exact steps for the way to Titania (desert, Scrapyard, the loop, the castle, the tower plaques).
 note|Fixed the game freezing: the route search now runs in smaller pieces, a failed search isn't repeated every time you stop walking, and picking who to talk to no longer runs slow searches.
@@ -88,5 +90,6 @@ guide|v381>=3&v381<=7&!a699,2|699|6|31|Tower: read the stone plaque on this floo
 guide|v381>=3&v381<=7&!a699,3|699|6|52|Tower: read the stone plaque on this floor (face it, press A).
 guide|v381>=3&v381<=7&!a699,4|699|6|74|Tower: read the stone plaque on this floor (face it, press A).
 # --- hard fights: step-by-step plans shown before the battle ---
-bossteam|STATRESHIRAM|PORYGON2:+TRICKROOM-MAGNETRISE,RHYPERIOR
-bossturn|STATRESHIRAM|PORYGON2&!TR=Use Trick Room;PORYGON2=Use Hyper Beam;RHYPERIOR&TR=Use Rock Wrecker;RHYPERIOR&LOW=Use Full Restore on Rhyperior;RHYPERIOR=Use Stone Edge;*=Switch to Rhyperior
+bossteam|STATRESHIRAM|RHYPERIOR?,$REVIVE10
+bossturn|STATRESHIRAM|RHYPERIOR&PP0:BLUEFLARE&PP0:DRAGONPULSE=Use Rock Wrecker;FAINT:RHYPERIOR&PP0:BLUEFLARE&PP0:DRAGONPULSE=Use {revive} on Rhyperior;FAINTED=Use {revive} on {fainted};*=Use {best}
+bosssend|STATRESHIRAM|PP0:BLUEFLARE&PP0:DRAGONPULSE=RHYPERIOR;*=!RHYPERIOR
