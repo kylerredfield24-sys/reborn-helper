@@ -1,4 +1,4 @@
-RH_VERSION = 57   # bumped with every release (used by the auto-updater)
+RH_VERSION = 58   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -1303,7 +1303,48 @@ module RH
   end
 
   # smart plan first (real map data), then the simple map graph as a backup
+  # fast first try: just walking through doors / warps (no switches, boulders or what-ifs) - finds long
+  # chains of rooms (train cars, mazes) that the full search runs out of time on
+  def self.quick_walk(targets, spot)
+    here = $game_map.map_id
+    return nil if targets.include?(here)
+    st = [here, $game_player.x, $game_player.y]
+    seen = { st => true }
+    first = { st => nil }
+    q = [st]
+    n = 0
+    until q.empty?
+      cur = q.shift
+      n += 1
+      return nil if n > 500
+      slice!
+      md = (model(cur[0]) rescue nil)
+      next if !md
+      f = m_flood(md, cur[1], cur[2])
+      if cur != st && targets.include?(cur[0]) && (!spot || spot.any? { |x, y| touch?(f[:tiles], x, y) })
+        return first[cur]
+      end
+      (m_exits(md, f) rescue []).each do |e|
+        next if e[4] != :walk
+        nx = [e[0], e[1], e[2]]
+        next if seen[nx]
+        seen[nx] = true
+        first[nx] = first[cur] || [e[0], e[3], :walk]
+        q << nx
+      end
+    end
+    return nil
+  end
+
   def self.route_to(targets, spot = nil)
+    if (qw = (quick_walk(targets, spot) rescue nil))
+      path = tile_path(qw[1])
+      path = model_path(qw[1]) if path.empty?
+      if !path.empty?
+        lbl = qw[0] == ($game_map.map_id rescue -1) ? toggle_label(path, targets) : mapname(qw[0])
+        return [path, lbl]
+      end
+    end
     sure_no = true     # every search finished and found no way at all
     [false, true, :people].each do |relax|
       pl = (plan(targets, spot, relax) rescue nil)

@@ -1,4 +1,5 @@
-version|57
+version|58
+note|Route search: a fast first pass that just follows doors and warps - long chains of train cars and rooms now get dots. Exact steps for the way to Titania (desert, Scrapyard, the loop, the castle, the tower plaques).
 note|Fixed the game freezing: the route search now runs in smaller pieces, a failed search isn't repeated every time you stop walking, and picking who to talk to no longer runs slow searches.
 note|Choice help now also shows for questions asked in a text box (most story questions work that way) - e.g. Adrienn's errand question before the gym battle.
 note|Choice help now shows for every story question that changes how a character feels about you (133 of them, read from the game): e.g. Fight: +1 Victoria, +1 Arc / Refuse: -1 Arc, -1 Victoria, +2 Adrienn.
@@ -62,3 +63,23 @@ guide|v339>=1&v339<=3&!a552,35|552|10|22|Find Victoria in Beryl Cemetery (bottom
 guide|v339=4|38|15|10|Go back to the Grand Hall in Opal Ward and talk to Ame.
 guide|v339=5|229|6|10|Arc is waiting in the Underground Railnet. Go down into the Railnet, follow the dots to Arc and walk up to him - pick Yes once you're healed and ready.
 guide|v339=6|622|9|6|Heal and save, then take the stairs at the west end of this Railnet tunnel down into Devon Corp B1F.
+# --- Titania (badge 15): Tourmaline Desert -> Scrapyard -> Once Upon a Somewhere (vars 339/380/381), checked against the game ---
+guide|v339>=48&v381=0&m687|664|52|44|Titania's gym is past the Scrapyard. Go into the train car entrance at the bottom right of this part of the desert.
+guide|v339>=48&v381=0&m663|663|0|0|Scrapyard train puzzle: smash (Rock Smash) the rocks in front of the trains, then walk into a train's open door to ride it - it shoves other trains out of the way. Keep working toward the far side; it ends at Train Town.
+guide|v339>=48&v381=0&m664|664|0|0|Scrapyard train puzzle: smash (Rock Smash) the rocks in front of the trains, then walk into a train's open door to ride it - it shoves other trains out of the way. Keep working toward the far side; it ends at Train Town.
+guide|v339>=48&v381=0&m665|665|0|0|Scrapyard train puzzle: smash (Rock Smash) the rocks in front of the trains, then walk into a train's open door to ride it - it shoves other trains out of the way. Keep working toward the far side; it ends at Train Town.
+guide|v339>=48&v381=0&m666|666|0|0|Scrapyard train puzzle: smash (Rock Smash) the rocks in front of the trains, then walk into a train's open door to ride it - it shoves other trains out of the way. Keep working toward the far side; it ends at Train Town.
+guide|v339>=48&v381=0&m692|692|0|0|Scrapyard train puzzle: smash (Rock Smash) the rocks in front of the trains, then walk into a train's open door to ride it - it shoves other trains out of the way. Keep working toward the far side; it ends at Train Town.
+guide|v339>=48&v381=0&m693|693|0|0|Scrapyard train puzzle: smash (Rock Smash) the rocks in front of the trains, then walk into a train's open door to ride it - it shoves other trains out of the way. Keep working toward the far side; it ends at Train Town.
+guide|v339>=48&v381=0&m691|686|7|117|Train Town: follow the dots to the train car that leads on.
+guide|v339>=48&v381=0&m686|696|31|23|Follow the train cars all the way through (each marked spot moves you to the next car).
+guide|v339>=48&v381=0&m696&v380<3|696|10|30|Strange loop: walk off the left (west) edge - it brings you back on the right. Do it 3 times in a row.
+guide|v339>=48&v381=0&m696|697|30|64|Stairs appeared - go up them (north side of this area).
+guide|v339>=48&v381=0&m697|698|9|78|Go into the castle.
+guide|v339>=48&v381=0&m698|698|9|19|Walk up through the castle - knights battle you on the way. Heal first.
+guide|v339>=48&v381=0|687|0|0|Titania's gym is past the Scrapyard in the Tourmaline Desert (the train car entrance at the bottom right of the northwest desert).
+guide|v381>=1&v381<=2|698|0|0|Keep going through the castle and watch the scene - you end up in a tower.
+guide|v381>=3&v381<=7&!a699,1|699|6|9|Tower: read the stone plaque (face it, press A). There's one on each of the 4 floors.
+guide|v381>=3&v381<=7&!a699,2|699|6|31|Tower: read the stone plaque on this floor (face it, press A).
+guide|v381>=3&v381<=7&!a699,3|699|6|52|Tower: read the stone plaque on this floor (face it, press A).
+guide|v381>=3&v381<=7&!a699,4|699|6|74|Tower: read the stone plaque on this floor (face it, press A).
