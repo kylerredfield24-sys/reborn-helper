@@ -1,4 +1,5 @@
-version|51
+version|52
+note|Walking path: fixed areas joined edge-to-edge (like Beryl Ward and Beryl Cemetery) - the dots were stuck on "finding the way" because the helper couldn't see those joins in the real game.
 note|Side quest tracker: the Goal tab now shows how to get the Mega-Z Ring (ARC's quest stage, who still needs their Pokemon back, or the freemegaz password route) - pick the line to draw the route. A message pops up once each time it changes.
 note|Max Candy now finishes every evolution (Beldum goes all the way to Metagross). If a Pokemon is already at the cap but can still evolve (like a Metang at Lv 80), pick Max Candy again and it offers to evolve it.
 note|Walking path: staircases made of several stair pads in a row are now followed correctly.

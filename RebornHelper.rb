@@ -1,4 +1,4 @@
-RH_VERSION = 51   # bumped with every release (used by the auto-updater)
+RH_VERSION = 52   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -516,19 +516,36 @@ module RH
     return $rh_warps
   end
 
-  def self.connections(id)
-    out = []
-    return out if !defined?(MAPCONNECTIONSHASH)
-    MAPCONNECTIONSHASH.each do |k, v|
-      (v[:connections] || []).each do |c|
-        if c[0] == id
-          out << [c[3], c[1], c[2], c[4], c[5]]
-        elsif c[3] == id
-          out << [c[0], c[4], c[5], c[1], c[2]]
-        end
+  # every map edge that joins another map: [map1, x1, y1, map2, x2, y2] (tile x1,y1 of map1 = x2,y2 of map2).
+  # In the real game they come from Data/connections.dat (mapconnections.rb is only read when compiling).
+  def self.conn_list
+    return $rh_conns if $rh_conns
+    list = []
+    begin
+      MAPCONNECTIONSHASH.each_value { |v| (v[:connections] || []).each { |c| list << c } } if defined?(MAPCONNECTIONSHASH)
+    rescue
+    end
+    if list.empty?
+      begin
+        (MapFactoryHelper.getMapConnections || []).each { |c| list << c }
+      rescue
       end
     end
-    return out
+    (load_data("Data/connections.dat") rescue []).each { |c| list << c } if list.empty?
+    $rh_conns = list.find_all { |c| c.is_a?(Array) && c.length >= 6 && c[0, 6].all? { |n| n.is_a?(Integer) } }
+    return $rh_conns
+  end
+
+  def self.connections(id)
+    out = []
+    conn_list.each do |c|
+      if c[0] == id
+        out << [c[3], c[1], c[2], c[4], c[5]]
+      elsif c[3] == id
+        out << [c[0], c[4], c[5], c[1], c[2]]
+      end
+    end
+    return out.uniq
   end
 
   # is this warp open right now? (checks the switch / story variable it needs)
