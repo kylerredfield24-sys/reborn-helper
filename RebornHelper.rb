@@ -1,4 +1,4 @@
-RH_VERSION = 56   # bumped with every release (used by the auto-updater)
+RH_VERSION = 57   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -1411,6 +1411,7 @@ module RH
     $rh_still = [pos, Graphics.frame_count] if $rh_still.nil? || $rh_still[0] != pos
     if $rh_nav_cache && $rh_nav_cache[0] == key
       c = $rh_nav_cache[1]
+      return c if c[0].empty? && c[1].to_s =~ /\A(no walkable way|too far)/     # don't search again until something changes
       f = (c[0].empty? && $rh_nav_cache[2] == pos) ? c : follow(c[0], c[1])
       return f if f                                 # on (or near) the line: no search needed
       # lost the line: keep showing it until you stand still, then plan again
@@ -1510,10 +1511,16 @@ module RH
     return best ? [best, "the switch here (changes this place to its other version - press A facing it)"] : nil
   end
 
-  # inside the background search: hand control back to the game every ~12ms
+  # time spent searching so far (only while the background search was running)
+  def self.cpu_used
+    ($rh_cpu || 0.0) + ($rh_in_fiber ? Time.now - $rh_slice : 0.0)
+  end
+
+  # inside the background search: hand control back to the game every few ms (keeps it smooth)
   def self.slice!
     return if !$rh_in_fiber
-    return if Time.now - $rh_slice < (($game_player.moving? rescue false) ? 0.004 : 0.012)
+    return if Time.now - $rh_slice < (($game_player.moving? rescue false) ? 0.003 : 0.006)
+    $rh_cpu = ($rh_cpu || 0.0) + (Time.now - $rh_slice)
     rl = @rh_relax
     ro = @rh_ov
     @rh_ov = nil
@@ -2446,10 +2453,12 @@ module RH
     variants = {}
     swseen = {}
     t0 = Time.now
+    c0 = cpu_used
     until open.empty?
       slice!
-      # in the background search there's time to look everywhere; quick checks elsewhere stay quick
-      if Time.now - t0 > ($rh_in_fiber ? 20.0 : 0.15)
+      # in the background search there's time to look everywhere (counted in time actually spent
+      # searching, not time the game was running in between); quick checks elsewhere stay quick
+      if ($rh_in_fiber ? cpu_used - c0 > 8.0 : Time.now - t0 > 0.15)
         floods = MAX_FLOODS + 1
         break
       end
@@ -2742,11 +2751,7 @@ module RH
       f = m_flood(md, $game_player.x, $game_player.y)
       return true if spot.any? { |x, y| touch?(f[:tiles], x, y) }
     end
-    [false, true, :people].each do |relax|
-      pl = (plan([c[:map]], spot, relax) rescue nil)
-      return true if pl.nil? || pl   # nil = search too big to tell, give it the benefit of the doubt
-    end
-    return false
+    return true    # other areas: the background route search finds the way (a full search here froze the game)
   end
 
   # rough compass direction + distance from you (same map) or which part of the map (other map)
