@@ -1,4 +1,4 @@
-RH_VERSION = 59   # bumped with every release (used by the auto-updater)
+RH_VERSION = 60   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #

@@ -1,4 +1,5 @@
-version|59
+version|60
+note|Reshiram battle plan updated: Trick Room with Porygon2, then Rhyperior moves first.
 note|Hard fights get a step-by-step battle plan before they start (first one: the Reshiram battle).
 note|Route search: a fast first pass that just follows doors and warps - long chains of train cars and rooms now get dots. Exact steps for the way to Titania (desert, Scrapyard, the loop, the castle, the tower plaques).
 note|Fixed the game freezing: the route search now runs in smaller pieces, a failed search isn't repeated every time you stop walking, and picking who to talk to no longer runs slow searches.
@@ -85,4 +86,4 @@ guide|v381>=3&v381<=7&!a699,2|699|6|31|Tower: read the stone plaque on this floo
 guide|v381>=3&v381<=7&!a699,3|699|6|52|Tower: read the stone plaque on this floor (face it, press A).
 guide|v381>=3&v381<=7&!a699,4|699|6|74|Tower: read the stone plaque on this floor (face it, press A).
 # --- hard fights: step-by-step plans shown before the battle ---
-boss|STATRESHIRAM|Heal everyone and save. Lead with Rhyperior (if the helper offers a better team, pick Switch). / Turn 1: Rock Wrecker. Reshiram always moves first, but Rhyperior resists Blue Flare and usually survives it. / Still standing? Rhyperior rests a turn after Rock Wrecker. Next turn: under half HP = Full Restore, otherwise Stone Edge. / When Reshiram charges Solar Beam (no damage that turn), attack - don't heal. If it uses Roost, hit it with Rock Wrecker again. / If Rhyperior faints: send Milotic (resists Fire, can Recover), use a Revive on Rhyperior, then switch Rhyperior back in.
+boss|STATRESHIRAM|Before: teach Porygon2 TM92 Trick Room (replace Magnet Rise). Party order: Porygon2 first, Rhyperior second. Heal and save. / Turn 1: Porygon2 uses Trick Room. Porygon2 survives the hit (Eviolite). For 4 turns the slower Pokemon moves first. / Turn 2: Porygon2 uses Hyper Beam (chips about 100). Keep attacking until Porygon2 faints. / Send Rhyperior: under Trick Room it moves FIRST. Use Rock Wrecker - after the chip damage it knocks Reshiram out before it can hit. / If Trick Room runs out before Rhyperior hits, reload your save and try again.
