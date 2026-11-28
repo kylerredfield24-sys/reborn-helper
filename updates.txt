@@ -1,4 +1,5 @@
-version|64
+version|65
+note|Battle fixes (tested in a real-engine replay of Titania's gym): Mega Evolution speed now counts (Mega Scizor is faster than you); a priority move like Bullet Punch is always shown as going first; Revive is only suggested when the Pokemon out would faint before it can move (a Revive uses your turn).
 note|Smarter battle picks: when a foe is shielded (Magical Seed / Protect) it says to set up instead of wasting a hit; uses your priority moves (Bullet Punch etc.) to KO before a faster foe moves; warns when their priority move (Shadow Sneak, Bullet Punch) KOs you first even though you're faster; avoids contact moves into King's Shield when a non-contact move is nearly as strong.
 note|Reshiram: new plan (nothing on your team survives its first hit). Drain its Blue Flare / Dragon Pulse by reviving every turn, then Rhyperior hits it with Rock Wrecker while it charges Solar Beam. The panel says what to use and who to send in.
 note|Fight screen now marks support moves (Trick Room, Recover, Light Screen...) with > when they're the better play, not just the strongest hit.

@@ -1,4 +1,4 @@
-RH_VERSION = 64   # bumped with every release (used by the auto-updater)
+RH_VERSION = 65   # bumped with every release (used by the auto-updater)
 #==============================================================================
 # Reborn Helper - an in-game assistant overlay for Pokemon Reborn 19.5
 #
@@ -3027,6 +3027,8 @@ module RH
   end
 
   def self.faster?(a, b, battle)
+    a = (mega_fake(battle, a) || a) if (a.index rescue 0).odd?
+    b = (mega_fake(battle, b) || b) if (b.index rescue 0).odd?
     sa = (a.pbSpeed rescue 0)
     sb = (b.pbSpeed rescue 0)
     tr = (battle.trickroom != 0 rescue false)
@@ -3283,7 +3285,8 @@ module RH
     # 4) bring back a fainted Pokemon that would win if it comes in free (after this one goes down)
     if $PokemonBag
       rv = REVIVE_ITEMS.keys.find_all { |k| bag_qty(k) > 0 }.min_by { |k| REVIVE_ITEMS[k] }
-      if rv
+      wasted = hit >= me.hp && !first    # its attack would never happen this turn
+      if rv && wasted
         party.each_with_index do |p, pi|
           next if !p || p.isEgg? || p.hp > 0
           fake = (battle.ai.pbMakeFakeBattler(p, pi, false, me.index) rescue nil)
@@ -3783,6 +3786,9 @@ module RH
       return ["Attack: #{best[1][:name]} (you may faint)", BAD] if best
       return ["You will likely faint", BAD]
     end
+    if dies && best && (pk = (foe_prio_ko(battle, dg[2], me) rescue nil))
+      return ["Attack: #{best[1][:name]} - their #{mname(pk.move)} goes first, you'll likely faint", BAD]
+    end
     return ["Attack now: #{best[1][:name]} (you're faster)", WARN] if dies && best
     return ["Attack: #{best[1][:name]}", GOOD] if best
     return ["No good move - switch", WARN]
@@ -3850,6 +3856,7 @@ module RH
       if a[:danger]
         hi, lo, f, m = a[:danger]
         pk = faster?(me, f, battle) && (foe_prio_ko(battle, f, me) rescue nil)
+        pk ||= faster?(me, f, battle) && f.moves.find { |m| m && m.pp > 0 && m.basedamage.to_i > 0 && prio_of(f, m) > 0 }
         who = pk ? "#{short(f.name, 7)} goes first (#{mname(pk.move)})." : (faster?(me, f, battle) ? "You're faster." : "#{short(f.name, 7)} is faster.")
         if hi >= me.hp
           lines << ["#{who} It can KO you", "", BAD]
